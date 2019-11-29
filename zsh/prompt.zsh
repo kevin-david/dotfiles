@@ -80,7 +80,7 @@ function prompt_char {
 
 export PROMPT=$'$(last_exit)\n$(user_info) in $(directory_name) $(git_dirty)$(need_push)\n$(prompt_char) '
 set_prompt () {
-  export RPROMPT="%{$fg_bold[cyan]%}%{$reset_color%}"
+  export RPROMPT="%{$fg[green]%}[%*]%{$reset_color%}"
 }
 
 precmd() {
