@@ -50,6 +50,10 @@ need_push () {
   fi
 }
 
+user_info() {
+  echo "%{$fg[magenta]%}%n%{$reset_color%}@%{$fg[yellow]%}%m%{$reset_color%}"
+}
+
 directory_name() {
   echo "%{$fg_bold[cyan]%}%1/%\/%{$reset_color%}"
 }
@@ -66,7 +70,7 @@ battery_status() {
   fi
 }
 
-export PROMPT=$'\n$(battery_status)in $(directory_name) $(git_dirty)$(need_push)\n› '
+export PROMPT=$'\n$(user_info) in $(directory_name) $(git_dirty)$(need_push)\n› '
 set_prompt () {
   export RPROMPT="%{$fg_bold[cyan]%}%{$reset_color%}"
 }
