@@ -5,9 +5,16 @@ fpath=($ZSH/functions $fpath)
 
 autoload -U $ZSH/functions/*(:t)
 
+LESS='-iMn'
+PAGER='/usr/bin/less -s -R'
 HISTFILE=~/.zsh_history
 HISTSIZE=10000
 SAVEHIST=10000
+
+if [ "$(uname -s)" = "Linux" ]
+then
+    EDITOR='nano -w'
+fi
 
 setopt NO_BG_NICE # don't nice background tasks
 setopt NO_HUP
@@ -21,6 +28,7 @@ setopt PROMPT_SUBST
 setopt CORRECT
 setopt COMPLETE_IN_WORD
 setopt IGNORE_EOF
+setopt HIST_IGNORE_SPACE
 
 setopt APPEND_HISTORY # adds history
 setopt INC_APPEND_HISTORY SHARE_HISTORY  # adds history incrementally and share it across sessions
