@@ -70,7 +70,15 @@ battery_status() {
   fi
 }
 
-export PROMPT=$'\n$(user_info) in $(directory_name) $(git_dirty)$(need_push)\n› '
+function last_exit {
+  echo "%(?, ,%{$fg[red]%}FAIL: $?%{$reset_color%}\n)"
+}
+
+function prompt_char {
+	if [ $UID -eq 0 ]; then echo "%{$fg[red]%}#%{$reset_color%}"; else echo '›'; fi
+}
+
+export PROMPT=$'$(last_exit)\n$(user_info) in $(directory_name) $(git_dirty)$(need_push)\n$(prompt_char) '
 set_prompt () {
   export RPROMPT="%{$fg_bold[cyan]%}%{$reset_color%}"
 }
