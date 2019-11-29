@@ -9,6 +9,10 @@
         wtf     = !$ZSH/bin/git-wtf
         rank-contributors = !$ZSH/bin/git-rank-contributors
         count   = !git shortlog -sn
+        lg = log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit
+        st = status
+        br = branch
+        oops = commit --amend --no-edit -a
 [color]
         diff = auto
         status = auto
@@ -16,13 +20,20 @@
         ui = true
 [core]
         excludesfile = ~/.gitignore
-        editor = vim
+        editor = code --wait
+        preloadindex = true
+        fscache = true
+        longPaths = true
+        commitGraph = true
+[filter "lfs"]
+        smudge = cat
+        required = true
+        clean = git-lfs clean -- %f
+[lfs]
+        ConcurrentTransfers = 1
+        Batch = true
 [apply]
         whitespace = nowarn
-[mergetool]
-        keepBackup = false
-[difftool]
-        prompt = false
 [help]
         autocorrect = 1
 [push]
@@ -31,5 +42,29 @@
         #
         # Setting to git 2.0 default to suppress warning message
         default = simple
-[credential]
-	helper = osxkeychain
+[fetch]
+        prune = true
+[protocol]
+        version = 2
+
+[difftool]
+        prompt = true
+[difftool "vsdiffmerge"]
+        cmd = \"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Enterprise\\Common7\\IDE\\CommonExtensions\\Microsoft\\TeamFoundation\\Team Explorer\\vsdiffmerge.exe\" \"$LOCAL\" \"$REMOTE\" //t
+        keepBackup = false
+[difftool "vs-code"]
+        cmd = code --wait --diff $LOCAL $REMOTE
+
+[mergetool]
+        prompt = true
+        keepBackup = false
+[mergetool "vsdiffmerge"]
+        cmd = \"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Enterprise\\Common7\\IDE\\CommonExtensions\\Microsoft\\TeamFoundation\\Team Explorer\\vsDiffMerge.exe\" \"$REMOTE\" \"$LOCAL\" \"$BASE\" \"$MERGED\" //m
+        trustExitCode = true
+        keepBackup = false
+[mergetool "p4merge"]
+        cmd = \"C:\\Program Files\\Perforce\\p4merge.exe\" \"$BASE\" \"$LOCAL\" \"$REMOTE\" \"$MERGED\"
+[difftool "p4merge"]
+        cmd = \"C:\\Program Files\\Perforce\\p4merge.exe\" \"$LOCAL\" \"$REMOTE\"
+[mergetool "vs-code"]
+        cmd = code --wait $MERGED

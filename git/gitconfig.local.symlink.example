@@ -3,3 +3,7 @@
         email = AUTHOREMAIL
 [credential]
         helper = GIT_CREDENTIAL_HELPER
+[diff]
+	tool = GIT_DIFFTOOL
+[merge]
+	tool = GIT_MERGETOOL
