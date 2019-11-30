@@ -1,11 +1,11 @@
 GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
-echo "${GREEN}Updating system packages${NC}"
+echo -e "${GREEN}Updating system packages${NC}"
 pacman -Syyu
 
-echo "${GREEN}Updating AUR packages${NC}"
+echo -e "${GREEN}Updating AUR packages${NC}"
 aura -Akuax
 
-echo "${GREEN}Removing orphans (`error: no targets specified` is expected)${NC}"
+echo -e "${GREEN}Removing orphans ('error: no targets specified' is expected)${NC}"
 pacman -Rns $(pacman -Qtdq)
