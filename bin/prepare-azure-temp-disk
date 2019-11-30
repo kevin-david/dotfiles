@@ -1,0 +1,32 @@
+# USAGE: ./prepare-resource-disk sdb
+
+#!/bin/bash
+# format
+cat <<EOF | fdisk /dev/$1
+d
+n
+
+
+
+
+w
+EOF
+DISK=/dev/"$1"1
+mkfs.ext4 -F $DISK
+
+# mount
+MOUNTPOINT=/mnt/resource
+mkdir $MOUNTPOINT
+mount -v $DISK $MOUNTPOINT
+
+# swap
+SWAPFILE=$MOUNTPOINT/swap.file
+fallocate -l 4G $SWAPFILE
+chmod 600 $SWAPFILE
+mkswap $SWAPFILE
+swapon $SWAPFILE
+
+# incomplete 
+mkdir $MOUNTPOINT/incomplete
+chown torrent:http $MOUNTPOINT/incomplete
+chmod 775 $MOUNTPOINT/incomplete

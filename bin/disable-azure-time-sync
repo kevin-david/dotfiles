@@ -1,0 +1,2 @@
+# python2 lsvmbus -vvvv
+echo 2dd1ce17-079e-403c-b352-a1921ee207ee > /sys/bus/vmbus/drivers/hv_util/unbind
