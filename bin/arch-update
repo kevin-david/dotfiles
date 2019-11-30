@@ -1,8 +1,8 @@
-echo '%F{green}Updating system packages%n'
+echo "%F{green}Updating system packages%n"
 pacman -Syyu
 
-echo '%F{green}Updating AUR packages%n'
+echo "%F{green}Updating AUR packages%n"
 aura -Akuax
 
-echo '%F{green}Removing orphans (`error: no targets specified` is expected)%n'
+echo "%F{green}Removing orphans (`error: no targets specified` is expected)%n"
 pacman -Rns $(pacman -Qtdq)
