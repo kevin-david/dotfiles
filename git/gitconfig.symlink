@@ -19,7 +19,7 @@
         branch = auto
         ui = true
 [core]
-        excludesfile = ~/.gitignore
+	excludesfile = /Users/kevin/.gitignore
         editor = code --wait
         preloadindex = true
         fscache = true
@@ -68,3 +68,9 @@
         cmd = \"C:\\Program Files\\Perforce\\p4merge.exe\" \"$LOCAL\" \"$REMOTE\"
 [mergetool "vs-code"]
         cmd = code --wait $MERGED
+[difftool "sourcetree"]
+	cmd = opendiff \"$LOCAL\" \"$REMOTE\"
+	path = 
+[mergetool "sourcetree"]
+	cmd = /Applications/SourceTree.app/Contents/Resources/opendiff-w.sh \"$LOCAL\" \"$REMOTE\" -ancestor \"$BASE\" -merge \"$MERGED\"
+	trustExitCode = true
