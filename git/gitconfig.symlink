@@ -19,7 +19,7 @@
         branch = auto
         ui = true
 [core]
-	excludesfile = /Users/kevin/.gitignore
+        excludesfile = ~/.gitignore
         editor = code --wait
         preloadindex = true
         fscache = true
