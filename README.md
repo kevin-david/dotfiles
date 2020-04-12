@@ -7,7 +7,7 @@ Forked from [@holman's dotfiles](https://github.com/holman/dotfiles). More info 
 Run this:
 
 ```sh
-git clone https://github.com/kevin-david/dotfiles.git ~/.dotfiles
+git clone git@github.com:kevin-david/dotfiles.git ~/.dotfiles
 cd ~/.dotfiles
 script/bootstrap
 ```
