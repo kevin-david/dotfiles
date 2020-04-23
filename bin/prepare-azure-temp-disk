@@ -1,4 +1,4 @@
-# USAGE: ./prepare-resource-disk sdb
+# USAGE: ./prepare-resource-disk sdb (user) (group)
 
 #!/bin/bash
 # format
@@ -26,7 +26,9 @@ chmod 600 $SWAPFILE
 mkswap $SWAPFILE
 swapon $SWAPFILE
 
+tune2fs -m 0 $DISK
+
 # incomplete 
 mkdir $MOUNTPOINT/incomplete
-chown torrent:http $MOUNTPOINT/incomplete
+chown $1:$2 $MOUNTPOINT/incomplete
 chmod 775 $MOUNTPOINT/incomplete
