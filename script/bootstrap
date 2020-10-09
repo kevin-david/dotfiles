@@ -41,19 +41,21 @@ setup_gitconfig () {
       git_difftool='vs-code'
     fi
 
-    user ' - What is your github author name?'
-    read -e git_authorname
-    user ' - What is your github author email?'
-    read -e git_authoremail
+    if ! [ -z "$PS1" ]; then
+      user ' - What is your github author name?'
+      read -e git_authorname
+      user ' - What is your github author email?'
+      read -e git_authoremail
 
-    sed -e "s/AUTHORNAME/$git_authorname/g" \
-      -e "s/AUTHOREMAIL/$git_authoremail/g" \
-      -e "s/GIT_CREDENTIAL_HELPER/$git_credential/g" \
-      -e "s/GIT_DIFFTOOL/$git_difftool/g" \
-      -e "s/GIT_MERGETOOL/$git_mergetool/g" \
-      git/gitconfig.local.symlink.example > git/gitconfig.local.symlink
+      sed -e "s/AUTHORNAME/$git_authorname/g" \
+        -e "s/AUTHOREMAIL/$git_authoremail/g" \
+        -e "s/GIT_CREDENTIAL_HELPER/$git_credential/g" \
+        -e "s/GIT_DIFFTOOL/$git_difftool/g" \
+        -e "s/GIT_MERGETOOL/$git_mergetool/g" \
+        git/gitconfig.local.symlink.example > git/gitconfig.local.symlink
 
-    success 'gitconfig'
+      success 'gitconfig'
+    fi
   fi
 }
 
