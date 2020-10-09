@@ -64,7 +64,7 @@ link_file () {
   local src=$1 dst=$2
 
   local overwrite= backup= skip=
-  local action=
+  local action=s
 
   if [ -f "$dst" -o -d "$dst" -o -L "$dst" ]
   then
@@ -83,7 +83,9 @@ link_file () {
 
         user "File already exists: $dst ($(basename "$src")), what do you want to do?\n\
         [s]kip, [S]kip all, [o]verwrite, [O]verwrite all, [b]ackup, [B]ackup all?"
-        read -n 1 action
+        if ! [ -z "$PS1" ]; then
+          read -n 1 action
+        fi
 
         case "$action" in
           o )
