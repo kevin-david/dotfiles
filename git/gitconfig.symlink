@@ -42,11 +42,11 @@
         #
         # Setting to git 2.0 default to suppress warning message
         default = simple
+# Begin Kevin
+[init]
+        defaultBranch = main
 [fetch]
         prune = true
-[protocol]
-        version = 2
-
 [difftool]
         prompt = true
 [difftool "vsdiffmerge"]
@@ -58,21 +58,13 @@
 [mergetool]
         prompt = true
         keepBackup = false
-[mergetool "vsdiffmerge"]
-        cmd = \"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Enterprise\\Common7\\IDE\\CommonExtensions\\Microsoft\\TeamFoundation\\Team Explorer\\vsDiffMerge.exe\" \"$REMOTE\" \"$LOCAL\" \"$BASE\" \"$MERGED\" //m
-        trustExitCode = true
-        keepBackup = false
-[mergetool "p4merge"]
-        cmd = \"C:\\Program Files\\Perforce\\p4merge.exe\" \"$BASE\" \"$LOCAL\" \"$REMOTE\" \"$MERGED\"
-[difftool "p4merge"]
-        cmd = \"C:\\Program Files\\Perforce\\p4merge.exe\" \"$LOCAL\" \"$REMOTE\"
 [mergetool "vs-code"]
         cmd = code --wait $MERGED
 [difftool "sourcetree"]
-	cmd = opendiff \"$LOCAL\" \"$REMOTE\"
-	path = 
+        cmd = opendiff \"$LOCAL\" \"$REMOTE\"
+        path = 
 [mergetool "sourcetree"]
-	cmd = /Users/kevin/Applications/Sourcetree.app/Contents/Resources/opendiff-w.sh \"$LOCAL\" \"$REMOTE\" -ancestor \"$BASE\" -merge \"$MERGED\"
-	trustExitCode = true
+        cmd = /Users/kevin/Applications/Sourcetree.app/Contents/Resources/opendiff-w.sh \"$LOCAL\" \"$REMOTE\" -ancestor \"$BASE\" -merge \"$MERGED\"
+        trustExitCode = true
 [rebase]
-	autosquash = true
+        autosquash = true
