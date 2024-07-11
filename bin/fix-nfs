@@ -1,0 +1,4 @@
+#!/bin/bash
+# NFS gets out of sorts sometimes, restart and check status
+systemctl restart nfs-server.service
+systemctl status nfs-server.service
