@@ -20,7 +20,6 @@
         ui = true
 [core]
         excludesfile = ~/.gitignore
-        editor = code --wait
         preloadindex = true
         fscache = true
         longPaths = true
