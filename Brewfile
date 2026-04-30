@@ -1,83 +1,84 @@
 tap "homebrew/bundle"
-tap "whatpulse/whatpulse"
 
-brew "apktool"
-brew "autoenv"
-brew "bwm-ng"
-brew "cloudflared"
-brew "dotnet"
-brew "firefox"
-brew "gh"
-brew "ghostscript"
-brew "gstreamer"
-brew "htop"
-brew "imagemagick"
-brew "jadx"
-brew "nmap"
+brew "apktool"          # Android APK reverse engineering
+brew "autoenv"          # Auto-load .env on cd
+brew "bash"             # Newer GNU bash than macOS
+brew "bwm-ng"           # Live bandwidth/IO monitor
+brew "cloudflared"      # Cloudflare Tunnel client
+brew "dotnet"           # .NET SDK and runtime
+brew "gh"               # GitHub command-line interface
+brew "ghostscript"      # PostScript/PDF interpreter
+brew "go"
+brew "gstreamer"        # Multimedia processing library
+brew "htop"             # Interactive process viewer
+brew "imagemagick"      # Image manipulation CLI
+brew "jadx"             # Android dex/APK decompiler
+brew "magic-wormhole"   # Secure encrypted file transfer
+brew "mas"              # Mac App Store CLI
+brew "nmap"             # Network port scanner
 brew "node"
-brew "npm"
-brew "ollama"
+brew "ollama"           # Run LLMs locally
 brew "openjdk"
-brew "pipx"
+brew "opentofu"         # Open-source Terraform fork
 brew "postgresql@14"
-brew "powershell"
 brew "protobuf"
 brew "python"
 brew "redis"
-brew "rtl_433"
 brew "rust"
-brew "scrcpy"
-brew "spaceman-diff"
-brew "spark"
-brew "uv"
+brew "scrcpy"           # Android screen mirror over USB
+brew "spaceman-diff"    # Diff images in git
+brew "spark"            # Sparklines for the shell
+brew "tokei"            # Fast lines-of-code counter
+brew "uv"               # Fast Python package manager
 brew "wget"
-brew "yarn"
-brew "yt-dlp"
-brew "zbar"
+brew "ykman"            # YubiKey CLI tool
+brew "yt-dlp"           # Video downloader (youtube-dl fork)
+brew "zbar"             # Barcode and QR reader
 brew "zsh"
 
 cask_args appdir: "/Applications"
-cask "aldente"
-cask "android-platform-tools"
-cask "azure-data-studio"
-cask "beeper"
-cask "caffeine"
-cask "diffusionbee"
+cask "android-platform-tools"   # adb, fastboot for Android
+cask "beeper"                   # Unified chat client (Matrix, etc.)
+cask "caffeine"                 # Keep Mac awake
+cask "cameracontroller"         # Control USB cameras, fix C920s autofocus
+cask "cursor"
+cask "diffusionbee"             # Local Stable Diffusion GUI
 cask "docker-desktop"
-cask "firefox"
-cask "force-paste"
+cask "eqmac"                    # System-wide audio equalizer
+cask "force-paste"              # Enable paste in restricted fields
 cask "ghostty"
 cask "gimp"
 cask "google-chrome"
-cask "gstreamer"
+cask "granola"
 cask "handbrake"
-cask "karabiner-elements"
-cask "keka"
-cask "lulu"
+cask "kap"                      # Open-source screen recorder
+cask "karabiner-elements"       # Keyboard remapping tool
+cask "keka"                     # Archive compressor and extractor
+cask "lulu"                     # Outbound network firewall
+cask "meetingbar"
 cask "microsoft-edge"
-cask "microsoft-remote-desktop"
-cask "openmtp"
+cask "obsidian"
+cask "openmtp"                  # Android MTP file browser
 cask "orcaslicer"
 cask "plex"
-cask "powershell"
-cask "protobuf"
+cask "proxyman"                 # HTTP debugging proxy
 cask "raycast"
-cask "scroll-reverser"
+cask "scroll-reverser"          # Better experience with trackpad+mouse
+cask "sleep-aid"                # Mac sleep monitor
 cask "spotify"
 cask "syncthing-app"
-cask "syncthing"
 cask "tailscale-app"
-cask "tailscale"
-cask "tigervnc-viewer"
+cask "tigervnc-viewer"          # VNC remote desktop client
 cask "todoist-app"
-cask "todoist"
 cask "virtualbox"
 cask "visual-studio-code"
 cask "vlc"
-cask "whatpulse_chmodbpf"
-cask "whatpulse/whatpulse/whatpulse"
-cask "xquartz"
-cask "zed"
-cask "zenmap"
+cask "warp"
+cask "windows-app"              # Microsoft Remote Desktop client
+cask "wispr-flow"
+cask "xquartz"                  # X11 server for macOS
+cask "yubico-yubikey-manager"   # YubiKey GUI manager
+cask "zed"                      # Fast collaborative editor
+cask "zen"                      # Privacy browser (Firefox-based)
+cask "zenmap"                   # Nmap graphical frontend
 cask "zoom"
-cask "rust"
