@@ -39,3 +39,7 @@ do
 done
 
 unset config_files
+
+. "$HOME/.atuin/bin/env"
+
+eval "$(atuin init zsh)"

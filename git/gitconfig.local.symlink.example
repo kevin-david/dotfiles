@@ -1,3 +1,6 @@
+# Install: install-gitconfig-local.sh
+# cp gitconfig.local.symlink.example gitconfig.local.symlink
+# ln -s ~/.dotfiles/git/gitconfig.local.symlink ~/.gitconfig.local
 [user]
         name = AUTHORNAME
         email = AUTHOREMAIL
