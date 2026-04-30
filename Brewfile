@@ -1,6 +1,7 @@
 tap "homebrew/bundle"
 
 brew "apktool"          # Android APK reverse engineering
+brew "atuin"            # Shell history with sync and search
 brew "autoenv"          # Auto-load .env on cd
 brew "bash"             # Newer GNU bash than macOS
 brew "bwm-ng"           # Live bandwidth/IO monitor
@@ -20,7 +21,7 @@ brew "node"
 brew "ollama"           # Run LLMs locally
 brew "openjdk"
 brew "opentofu"         # Open-source Terraform fork
-brew "postgresql@14"
+brew "postgresql@17"
 brew "protobuf"
 brew "python"
 brew "redis"
@@ -41,6 +42,8 @@ cask "android-platform-tools"   # adb, fastboot for Android
 cask "beeper"                   # Unified chat client (Matrix, etc.)
 cask "caffeine"                 # Keep Mac awake
 cask "cameracontroller"         # Control USB cameras, fix C920s autofocus
+cask "codex"                    # OpenAI Codex CLI
+cask "conductor"                # Manage parallel Claude Code sessions
 cask "cursor"
 cask "diffusionbee"             # Local Stable Diffusion GUI
 cask "docker-desktop"
@@ -50,7 +53,8 @@ cask "ghostty"
 cask "gimp"
 cask "google-chrome"
 cask "granola"
-cask "handbrake"
+cask "handbrake-app"
+cask "iina"                     # macOS-native video player (mpv-based)
 cask "kap"                      # Open-source screen recorder
 cask "karabiner-elements"       # Keyboard remapping tool
 cask "keka"                     # Archive compressor and extractor
@@ -62,10 +66,12 @@ cask "openmtp"                  # Android MTP file browser
 cask "orcaslicer"
 cask "plex"
 cask "proxyman"                 # HTTP debugging proxy
+cask "qlvideo"                  # QuickLook video thumbnails/metadata
 cask "raycast"
 cask "scroll-reverser"          # Better experience with trackpad+mouse
 cask "sleep-aid"                # Mac sleep monitor
 cask "spotify"
+cask "steam"
 cask "syncthing-app"
 cask "tailscale-app"
 cask "tigervnc-viewer"          # VNC remote desktop client
