@@ -54,10 +54,12 @@ cask "gimp"
 cask "google-chrome"
 cask "granola"
 cask "handbrake-app"
+cask "home-assistant"           # Companion app
 cask "iina"                     # macOS-native video player (mpv-based)
 cask "kap"                      # Open-source screen recorder
 cask "karabiner-elements"       # Keyboard remapping tool
 cask "keka"                     # Archive compressor and extractor
+cask "keymapp"                  # ZSA keyboard configurator
 cask "lulu"                     # Outbound network firewall
 cask "meetingbar"
 cask "microsoft-edge"
