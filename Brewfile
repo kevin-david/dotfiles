@@ -68,7 +68,7 @@ cask "openmtp"                  # Android MTP file browser
 cask "orcaslicer"
 cask "plex"
 cask "proxyman"                 # HTTP debugging proxy
-cask "qlvideo"                  # QuickLook video thumbnails/metadata
+cask "quicklook-video"          # Video thumbnails/metadata
 cask "raycast"
 cask "scroll-reverser"          # Better experience with trackpad+mouse
 cask "sleep-aid"                # Mac sleep monitor
@@ -76,6 +76,7 @@ cask "spotify"
 cask "steam"
 cask "syncthing-app"
 cask "tailscale-app"
+cask "telegram" 
 cask "tigervnc-viewer"          # VNC remote desktop client
 cask "todoist-app"
 cask "virtualbox"
