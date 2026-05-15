@@ -1,5 +1,3 @@
-tap "homebrew/bundle"
-
 brew "apktool"          # Android APK reverse engineering
 brew "atuin"            # Shell history with sync and search
 brew "autoenv"          # Auto-load .env on cd
@@ -7,6 +5,7 @@ brew "bash"             # Newer GNU bash than macOS
 brew "bwm-ng"           # Live bandwidth/IO monitor
 brew "cloudflared"      # Cloudflare Tunnel client
 brew "dotnet"           # .NET SDK and runtime
+brew "gemini-cli"
 brew "gh"               # GitHub command-line interface
 brew "ghostscript"      # PostScript/PDF interpreter
 brew "go"
@@ -18,6 +17,7 @@ brew "magic-wormhole"   # Secure encrypted file transfer
 brew "mas"              # Mac App Store CLI
 brew "nmap"             # Network port scanner
 brew "node"
+brew "nvm"
 brew "ollama"           # Run LLMs locally
 brew "openjdk"
 brew "opentofu"         # Open-source Terraform fork
@@ -39,7 +39,10 @@ brew "zsh"
 
 cask_args appdir: "/Applications"
 cask "android-platform-tools"   # adb, fastboot for Android
+cask "autodesk-fusion"
+cask "bambu-studio"
 cask "beeper"                   # Unified chat client (Matrix, etc.)
+cask "bitwarden"
 cask "caffeine"                 # Keep Mac awake
 cask "cameracontroller"         # Control USB cameras, fix C920s autofocus
 cask "codex"                    # OpenAI Codex CLI
@@ -51,6 +54,7 @@ cask "eqmac"                    # System-wide audio equalizer
 cask "force-paste"              # Enable paste in restricted fields
 cask "ghostty"
 cask "gimp"
+cask "github-copilot-app"
 cask "google-chrome"
 cask "granola"
 cask "handbrake-app"
@@ -86,7 +90,7 @@ cask "warp"
 cask "windows-app"              # Microsoft Remote Desktop client
 cask "wispr-flow"
 cask "xquartz"                  # X11 server for macOS
-cask "yubico-yubikey-manager"   # YubiKey GUI manager
+cask "yubico-authenticator"     # YubiKey GUI manager
 cask "zed"                      # Fast collaborative editor
 cask "zen"                      # Privacy browser (Firefox-based)
 cask "zenmap"                   # Nmap graphical frontend
