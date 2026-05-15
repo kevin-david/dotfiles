@@ -47,6 +47,7 @@ cask "caffeine"                 # Keep Mac awake
 cask "cameracontroller"         # Control USB cameras, fix C920s autofocus
 cask "codex"                    # OpenAI Codex CLI
 cask "conductor"                # Manage parallel Claude Code sessions
+cask "copilot-cli"
 cask "cursor"
 cask "diffusionbee"             # Local Stable Diffusion GUI
 cask "docker-desktop"
@@ -54,7 +55,6 @@ cask "eqmac"                    # System-wide audio equalizer
 cask "force-paste"              # Enable paste in restricted fields
 cask "ghostty"
 cask "gimp"
-cask "github-copilot-app"
 cask "google-chrome"
 cask "granola"
 cask "handbrake-app"
