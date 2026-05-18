@@ -29,6 +29,7 @@ brew "rust"
 brew "scrcpy"           # Android screen mirror over USB
 brew "spaceman-diff"    # Diff images in git
 brew "spark"            # Sparklines for the shell
+brew "tmux"
 brew "tokei"            # Fast lines-of-code counter
 brew "uv"               # Fast Python package manager
 brew "wget"
@@ -80,7 +81,7 @@ cask "spotify"
 cask "steam"
 cask "syncthing-app"
 cask "tailscale-app"
-cask "telegram" 
+cask "telegram"
 cask "tigervnc-viewer"          # VNC remote desktop client
 cask "todoist-app"
 cask "virtualbox"
