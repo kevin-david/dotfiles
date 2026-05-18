@@ -1,9 +1,14 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Homebrew
 #
 # This installs some of the common dependencies needed (or at least desired)
 # using Homebrew.
+
+# Only run on macOS
+if [ "$(uname -s)" != "Darwin" ]; then
+  exit 0
+fi
 
 # Check for Homebrew
 if test ! $(which brew)
