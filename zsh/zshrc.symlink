@@ -39,8 +39,3 @@ do
 done
 
 unset config_files
-
-# TODO why is this here? 
-#. "$HOME/.atuin/bin/env"
-
-eval "$(atuin init zsh)"
