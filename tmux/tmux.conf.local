@@ -1,4 +1,3 @@
-# : << 'EOF'
 # Oh my tmux!
 # 💛🩷💙🖤❤️🤍
 # https://github.com/gpakosz/.tmux
@@ -382,6 +381,12 @@ tmux_conf_urlscan_options="--compact --dedupe"
 # -- user customizations -------------------------------------------------------
 
 # this is the place to override or undo settings
+bind n next-window
+bind p previous-window
+set-option -s set-clipboard on
+set-option -as terminal-overrides 'xterm*:Ms=\E]52;c%p1%.0s;%p2%s\007'
+set-option -as terminal-features ',xterm*:clipboard'
+
 
 # increase history size
 set -g history-limit 10000
