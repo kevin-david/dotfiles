@@ -24,6 +24,9 @@
         fscache = true
         longPaths = true
         commitGraph = true
+        # No core.editor here on purpose: it would override $EDITOR on every
+        # machine (incl. Linux, where zed isn't installed). The OS-aware
+        # $EDITOR in system/env.zsh carries the zed --wait --new flags instead.
 [filter "lfs"]
         smudge = cat
         required = true
@@ -63,12 +66,6 @@
         keepBackup = false
 [mergetool "vs-code"]
         cmd = code --wait $MERGED
-[difftool "sourcetree"]
-        cmd = opendiff \"$LOCAL\" \"$REMOTE\"
-        path = 
-[mergetool "sourcetree"]
-        cmd = /Users/kevin/Applications/Sourcetree.app/Contents/Resources/opendiff-w.sh \"$LOCAL\" \"$REMOTE\" -ancestor \"$BASE\" -merge \"$MERGED\"
-        trustExitCode = true
 [rebase]
         autosquash = true
 [credential "https://github.com"]
