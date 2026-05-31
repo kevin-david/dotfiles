@@ -387,6 +387,9 @@ set-option -s set-clipboard on
 set-option -as terminal-overrides 'xterm*:Ms=\E]52;c%p1%.0s;%p2%s\007'
 set-option -as terminal-features ',xterm*:clipboard'
 
+# hack - fix claude multiline paste, with the tradeoff that shift-enter stops working
+# we get it back through a ghostty binding to \n though
+set -s extended-keys off
 
 # increase history size
 set -g history-limit 10000
