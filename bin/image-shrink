@@ -1,0 +1,242 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pillow>=11.0.0"]
+# ///
+
+from __future__ import annotations
+
+import argparse
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+DEFAULT_MAX_EDGE = 2560
+DEFAULT_QUALITY = 88
+SUPPORTED_OUTPUT_FORMATS = {"jpeg", "jpg", "png", "webp"}
+
+
+@dataclass(frozen=True)
+class ShrinkOptions:
+    max_edge: int
+    quality: int
+    output_dir: Path | None
+    suffix: str
+    output_format: str | None
+    in_place: bool
+    dry_run: bool
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Resize images for sharing and write metadata-free copies."
+    )
+    parser.add_argument("images", nargs="+", type=Path, help="Image files to process")
+    parser.add_argument(
+        "--max-edge",
+        type=int,
+        default=DEFAULT_MAX_EDGE,
+        help=f"Longest side in pixels after resizing. Default: {DEFAULT_MAX_EDGE}",
+    )
+    parser.add_argument(
+        "--quality",
+        type=int,
+        default=DEFAULT_QUALITY,
+        help=f"JPEG/WebP quality, 1-100. Default: {DEFAULT_QUALITY}",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Directory for cleaned images. Defaults to the source file's directory.",
+    )
+    parser.add_argument(
+        "--suffix",
+        default="-clean",
+        help="Suffix added before the extension unless --in-place is used. Default: -clean",
+    )
+    parser.add_argument(
+        "--format",
+        dest="output_format",
+        choices=sorted(SUPPORTED_OUTPUT_FORMATS),
+        help="Output format. Defaults to each source image's format.",
+    )
+    parser.add_argument(
+        "--in-place",
+        action="store_true",
+        help="Replace source files atomically after processing.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print planned output paths without writing files.",
+    )
+    return parser.parse_args(argv)
+
+
+def validate_options(args: argparse.Namespace) -> ShrinkOptions:
+    if args.max_edge < 1:
+        raise ValueError("--max-edge must be at least 1")
+    if not 1 <= args.quality <= 100:
+        raise ValueError("--quality must be between 1 and 100")
+    if args.in_place and args.output_dir is not None:
+        raise ValueError("--in-place cannot be combined with --output-dir")
+    if args.in_place and args.output_format is not None:
+        raise ValueError("--in-place cannot be combined with --format")
+
+    output_format = normalize_format(args.output_format) if args.output_format else None
+    return ShrinkOptions(
+        max_edge=args.max_edge,
+        quality=args.quality,
+        output_dir=args.output_dir,
+        suffix=args.suffix,
+        output_format=output_format,
+        in_place=args.in_place,
+        dry_run=args.dry_run,
+    )
+
+
+def normalize_format(format_name: str) -> str:
+    normalized = format_name.lower()
+    if normalized == "jpg":
+        return "jpeg"
+    return normalized
+
+
+def extension_for(format_name: str) -> str:
+    if format_name == "jpeg":
+        return ".jpg"
+    return f".{format_name}"
+
+
+def output_format_for(image: Image.Image, source: Path, options: ShrinkOptions) -> str:
+    if options.output_format:
+        return options.output_format
+
+    source_format = normalize_format(image.format.lower()) if image.format else ""
+    if source_format in SUPPORTED_OUTPUT_FORMATS:
+        return source_format
+
+    suffix_format = normalize_format(source.suffix.lstrip("."))
+    if suffix_format in SUPPORTED_OUTPUT_FORMATS:
+        return suffix_format
+
+    return "jpeg"
+
+
+def output_path_for(source: Path, output_format: str, options: ShrinkOptions) -> Path:
+    if options.in_place:
+        return source
+
+    output_dir = options.output_dir or source.parent
+    return output_dir / f"{source.stem}{options.suffix}{extension_for(output_format)}"
+
+
+def resized_dimensions(width: int, height: int, max_edge: int) -> tuple[int, int]:
+    longest = max(width, height)
+    if longest <= max_edge:
+        return width, height
+    scale = max_edge / longest
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def human_size(byte_count: int) -> str:
+    units = ["B", "KB", "MB", "GB"]
+    size = float(byte_count)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def prepare_pixels(image: Image.Image, output_format: str, max_edge: int) -> Image.Image:
+    cleaned = ImageOps.exif_transpose(image)
+    target_size = resized_dimensions(cleaned.width, cleaned.height, max_edge)
+    if target_size != cleaned.size:
+        cleaned = cleaned.resize(target_size, Image.Resampling.LANCZOS)
+
+    # Rebuild from pixel data so EXIF, GPS, comments, thumbnails, and text chunks are dropped.
+    if output_format == "jpeg":
+        if cleaned.mode in {"RGBA", "LA", "P"}:
+            background = Image.new("RGB", cleaned.size, "white")
+            alpha = cleaned.getchannel("A") if "A" in cleaned.getbands() else None
+            background.paste(cleaned.convert("RGBA"), mask=alpha)
+            return background
+        return cleaned.convert("RGB")
+    sanitized = cleaned.copy()
+    sanitized.info.clear()
+    return sanitized
+
+
+def save_image(image: Image.Image, path: Path, output_format: str, quality: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_kwargs: dict[str, object] = {}
+    if output_format == "jpeg":
+        save_kwargs = {"quality": quality, "optimize": True, "progressive": True}
+    elif output_format == "webp":
+        save_kwargs = {"quality": quality, "method": 6}
+    elif output_format == "png":
+        save_kwargs = {"optimize": True}
+
+    temp_path = path.with_name(f".{path.name}.tmp")
+    image.save(temp_path, format=output_format.upper(), **save_kwargs)
+    temp_path.replace(path)
+
+
+def process_image(source: Path, options: ShrinkOptions) -> str:
+    if not source.exists():
+        raise FileNotFoundError(source)
+    if not source.is_file():
+        raise ValueError(f"not a file: {source}")
+
+    input_bytes = source.stat().st_size
+    with Image.open(source) as image:
+        output_format = output_format_for(image, source, options)
+        output_path = output_path_for(source, output_format, options)
+        oriented = ImageOps.exif_transpose(image)
+        target_size = resized_dimensions(oriented.width, oriented.height, options.max_edge)
+        input_dimensions = f"{oriented.width}x{oriented.height}"
+        output_dimensions = f"{target_size[0]}x{target_size[1]}"
+
+        if options.dry_run:
+            return (
+                f"dry-run {source} -> {output_path} "
+                f"({input_dimensions} -> {output_dimensions}, {human_size(input_bytes)} input)"
+            )
+
+        cleaned = prepare_pixels(image, output_format, options.max_edge)
+        save_image(cleaned, output_path, output_format, options.quality)
+        output_bytes = output_path.stat().st_size
+        saved_percent = 100 * (1 - output_bytes / input_bytes) if input_bytes else 0
+        return (
+            f"wrote {output_path} "
+            f"({input_dimensions} -> {cleaned.width}x{cleaned.height}, "
+            f"{human_size(input_bytes)} -> {human_size(output_bytes)}, "
+            f"{saved_percent:.0f}% smaller)"
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = parse_args(argv)
+        options = validate_options(args)
+    except ValueError as error:
+        print(f"image-shrink: {error}", file=sys.stderr)
+        return 2
+
+    failures = 0
+    for source in args.images:
+        try:
+            print(process_image(source, options))
+        except (OSError, ValueError, UnidentifiedImageError) as error:
+            failures += 1
+            print(f"image-shrink: {source}: {error}", file=sys.stderr)
+
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
