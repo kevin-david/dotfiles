@@ -21,6 +21,7 @@ brew "nvm"
 brew "ollama"           # Run LLMs locally
 brew "openjdk"
 brew "opentofu"         # Open-source Terraform fork
+brew "pngpaste"         # Paste macOS clipboard images to PNG files
 brew "postgresql@17"
 brew "protobuf"
 brew "python"
