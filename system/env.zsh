@@ -6,5 +6,3 @@ if [ "$(uname -s)" = "Darwin" ]; then
 else
     export EDITOR='nano -w'
 fi
-
-export CLIPSSH_REMOTE_DIR=~/.cache/clipssh
