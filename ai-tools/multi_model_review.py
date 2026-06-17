@@ -168,6 +168,56 @@ def _as_int(v: object) -> int | None:
         return None
 
 
+def _hunk_new_start(header: str) -> int:
+    """New-file start line from a `@@ -a,b +c,d @@` hunk header (0 if unparsable)."""
+    try:
+        plus = header.split("+", 1)[1]
+        return int(plus.split(",", 1)[0].split(" ", 1)[0].split("@@", 1)[0])
+    except (IndexError, ValueError):
+        return 0
+
+
+def diff_commentable_lines(base: str, head: str) -> dict[str, set[int]]:
+    """RIGHT-side line numbers GitHub will accept an inline comment on, per file:
+    the added/context lines inside a hunk of ``base..head``. Used to route a
+    finding to inline (its line is in the diff) vs. the summary (it isn't) WITHOUT
+    firing a doomed POST and catching the 422. We track an ``in_hunk`` flag so an
+    added content line that happens to read ``+++ x`` isn't mistaken for the
+    ``+++ b/path`` file header (both start with ``+``; only the header appears
+    outside a hunk)."""
+    out = run_ok(["git", "diff", f"{base}..{head}"])
+    files: dict[str, set[int]] = {}
+    path: str | None = None
+    newln = 0
+    in_hunk = False
+    for ln in out.splitlines():
+        if ln.startswith("diff --git"):
+            in_hunk, path = False, None
+        elif not in_hunk:
+            if ln.startswith("+++ "):
+                p = ln[4:].strip()
+                path = None if p == "/dev/null" else (p[2:] if p.startswith("b/") else p)
+                if path:
+                    files.setdefault(path, set())
+            elif ln.startswith("@@"):
+                newln = _hunk_new_start(ln)
+                in_hunk = newln > 0
+        elif ln.startswith("@@"):
+            newln = _hunk_new_start(ln)
+            in_hunk = newln > 0
+        elif ln.startswith("+"):
+            if path:
+                files[path].add(newln)
+            newln += 1
+        elif ln.startswith(" "):
+            if path:
+                files[path].add(newln)
+            newln += 1
+        elif not ln.startswith(("-", "\\")):
+            in_hunk = False  # left the hunk region
+    return files
+
+
 def post_inline(slug: str, pr: str, head: str, f: dict, body: str, line: int) -> subprocess.CompletedProcess:
     """One review comment per finding => its own resolvable thread."""
     cmd = ["gh", "api", "--method", "POST", f"repos/{slug}/pulls/{pr}/comments",
@@ -208,32 +258,45 @@ def process_lane(lane: str, res: LaneResult, ctx: dict, out: Path) -> None:
 
     findings = [f for f in data.get("findings", [])
                 if f.get("confidence", 100) >= THRESHOLD]
-    fallback: list[str] = []
+    # Two buckets, kept apart so a finding about code this PR never touched can't
+    # masquerade as part of the verdict on the PR: `inscope` = findings on a
+    # changed file that just couldn't be anchored to a hunk line; `offscope` =
+    # findings on files outside the diff entirely.
+    inscope: list[str] = []
+    offscope: list[str] = []
 
     for f in findings:
         sev = f.get("severity", "Suggestion")
         title = f.get("title", "")
         fbody = f.get("body", "")
         comment = f"**{tag}** **{sev}** — {title}\n\n{fbody}"
-        # A finding is inline-postable only if it names a path and a line we can
-        # coerce to an int. A malformed anchor falls back to the summary rather
-        # than crashing the whole (sequential) posting loop for later lanes.
+        path = f.get("path")
         line = _as_int(f.get("line"))
-        if ctx["mode"] == "post" and f.get("path") and line is not None:
+        in_pr_file = bool(path) and path in ctx["diff_lines"]
+        # Inline-postable only if the anchor lands on a line GitHub accepts: one
+        # inside a changed hunk. Everything else routes to the summary directly
+        # rather than firing a POST we know would 422; dry runs route all there.
+        anchorable = in_pr_file and line is not None and line in ctx["diff_lines"][path]
+        if ctx["mode"] == "post" and anchorable:
             p = post_inline(ctx["slug"], ctx["pr"], ctx["head"], f, comment, line)
             if p.returncode == 0:
-                print(f"  [{lane}] inline {sev} @ {f['path']}:{line}")
+                print(f"  [{lane}] inline {sev} @ {path}:{line}")
                 continue
-            # Often the line is outside the diff, but it could be an API/auth
-            # error — surface gh's actual reason instead of assuming one cause.
+            # Anchor was in the diff yet the POST still failed (auth / API / race) —
+            # surface gh's reason and fall back so the finding isn't lost.
             why = (p.stderr.strip().splitlines() or ["gh api error"])[-1]
-            print(f"  [{lane}] inline post failed @ {f['path']}:{line}: {why}", file=sys.stderr)
-            fallback.append(f"- **{sev}** — `{f['path']}:{line}` (couldn't post inline: {why})\n\n  {fbody}")
-        else:
-            loc = f.get("path", "") + (f":{f['line']}" if f.get("line") else "")
-            fallback.append(f"- **{sev}** — `{loc}` {title}\n\n  {fbody}")
+            print(f"  [{lane}] inline post failed @ {path}:{line}: {why}", file=sys.stderr)
+            inscope.append(f"- **{sev}** — `{path}:{line}` (couldn't post inline: {why})\n\n  {fbody}")
+            continue
+        loc = (path or "") + (f":{line}" if line is not None else "")
+        entry = f"- **{sev}** — `{loc}` {title}\n\n  {fbody}"
+        (inscope if in_pr_file else offscope).append(entry)
+        bucket = "inline" if in_pr_file else "OUT-OF-SCOPE"
+        print(f"  [{lane}] summary ({bucket}) {sev} @ {loc or '(no anchor)'}")
 
-    # Per-model summary: assessment + strengths + anything not anchorable inline.
+    # Per-model summary: assessment + strengths describe THIS PR's diff; the two
+    # buckets render under distinct headers so out-of-scope findings read as
+    # routing for a human, not as a verdict on this PR.
     parts = [f"**{tag}** — review summary", "",
              f"**Assessment:** {data.get('assessment', 'n/a')}", ""]
     strengths = data.get("strengths") or []
@@ -241,10 +304,14 @@ def process_lane(lane: str, res: LaneResult, ctx: dict, out: Path) -> None:
         parts.append("**Strengths:**")
         parts += [f"- {s}" for s in strengths]
         parts.append("")
-    if fallback:
+    if inscope:
         header = ("**Findings not anchorable to a changed line:**"
                   if ctx["mode"] == "post" else "**Findings (dry run — not posted):**")
-        parts += [header, "", *fallback]
+        parts += [header, "", *inscope, ""]
+    if offscope:
+        parts += ["**Out of scope — findings in files this PR did not change "
+                  "(surfaced for routing, not part of the verdict on this PR):**",
+                  "", *offscope]
     _post_or_print(lane, "summary comment", "\n".join(parts), ctx)
 
 
@@ -293,7 +360,7 @@ def main() -> None:
     slug = repo["nameWithOwner"]
     visibility = repo["visibility"]  # PUBLIC | PRIVATE | INTERNAL
     head = meta["headRefOid"]
-    base = args.base or meta["baseRefName"]
+    base_ref = args.base or meta["baseRefName"]
     if not head:
         die(f"could not resolve PR #{pr} (is gh authenticated?)")
 
@@ -323,8 +390,28 @@ def main() -> None:
     if not lanes:
         die("no requested model CLIs are installed")
 
-    print(f"Reviewing PR #{pr}  (base={base}  head={head[:12]}  repo={slug}  {visibility})")
-    print(f"Lanes: {','.join(lanes)}   effort={EFFORT}   threshold={THRESHOLD}   mode={mode}")
+    # Resolve the base to the PR's actual fork point: fetch the head and the base
+    # branch fresh from origin and take their merge-base, rather than diffing
+    # against whatever a local branch named e.g. `main` happens to point at. A
+    # stale local base drags already-merged commits the PR never touched into the
+    # diff, so reviewers burn effort on unrelated code and their findings 422 (the
+    # lines aren't in the PR's diff). merge-base..HEAD is exactly the PR's changes.
+    if (run(["git", "fetch", "--quiet", "origin", head]).returncode != 0
+            and run(["git", "fetch", "--quiet", "origin", f"pull/{pr}/head"]).returncode != 0):
+        die(f"could not fetch PR head {head}")
+    if run(["git", "fetch", "--quiet", "origin", base_ref]).returncode == 0:
+        base_tip = run_ok(["git", "rev-parse", "FETCH_HEAD"]).strip()
+    else:  # --base may be a local ref/sha (e.g. origin/main), not a branch on origin
+        p = run(["git", "rev-parse", "--verify", "--quiet", base_ref])
+        if p.returncode != 0:
+            die(f"could not resolve base ref {base_ref}")
+        base_tip = p.stdout.strip()
+    base = run_ok(["git", "merge-base", base_tip, head]).strip()
+    diff_lines = diff_commentable_lines(base, head)
+
+    print(f"Reviewing PR #{pr}  (base={base_ref}@{base[:12]}  head={head[:12]}  repo={slug}  {visibility})")
+    print(f"Lanes: {','.join(lanes)}   effort={EFFORT}   threshold={THRESHOLD}   mode={mode}   "
+          f"({len(diff_lines)} changed files)")
     if mode == "post":
         print(f">>> will POST inline comments to PR #{pr}")
 
@@ -336,12 +423,10 @@ def main() -> None:
     # without touching the main working tree. That tree may be mid-edit, or have
     # a dev server / containers bound to it that would break if its branch
     # switched out from under them. The worktree is removed on exit.
-    if (run(["git", "fetch", "--quiet", "origin", head]).returncode != 0
-            and run(["git", "fetch", "--quiet", "origin", f"pull/{pr}/head"]).returncode != 0):
-        die(f"could not fetch PR head {head}")
     run_ok(["git", "worktree", "add", "--detach", wt, head])
 
-    ctx = {"mode": mode, "slug": slug, "pr": pr, "head": head, "failed": []}
+    ctx = {"mode": mode, "slug": slug, "pr": pr, "head": head,
+           "diff_lines": diff_lines, "failed": []}
     try:
         prompts = {
             lane: render_prompt(template, tag=tag_for(lane), base=base,

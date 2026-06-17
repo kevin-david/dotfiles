@@ -33,6 +33,18 @@ If that's genuinely all this is, set `"eligible": false`, say why in
   core logic, persistence, outputs.
 - **Read the surrounding code, not just the diff lines.** A diff hunk is only
   reviewable in the context of what calls it and what it calls. Open the files.
+- **Trace the behavioral delta both directions from each change — this is how
+  you tell what the change *actually does*, not what it looks like it does.**
+  *Down the stack:* what the changed code now calls, reads, or writes
+  differently — does it still satisfy the contracts, invariants, and
+  null/empty/error expectations of the functions, queries, and schemas it
+  depends on? *Up the stack:* every caller and consumer of what changed — does
+  the new behavior actually reach an observable surface, and does it break a
+  caller that relied on the old behavior (a value that's now null/absent, an
+  error raised where one wasn't, a row no longer written, an ordering changed)?
+  A change is only as correct as its worst caller. The findings that matter are
+  where the delta propagates to a wrong output, a violated invariant, or a
+  surprised caller — not the edited line in isolation.
 - Think hard. Surface-level "looks fine" passes are worse than useless here —
   they manufacture false confidence. If you didn't trace it, don't bless it.
 - Form your findings **independently**. Do **not** read the PR's existing review
@@ -143,6 +155,15 @@ as lower priority than issues the PR actually introduced — never let a
 pre-existing find outrank a regression. Such issues usually sit on lines the
 diff didn't touch, so they'll land in the summary comment rather than inline;
 that's fine.
+
+**Keep the verdict scoped to the diff.** Your `assessment` and `strengths` must
+describe only what *this PR changed* (the `{{BASE_REF}}...HEAD` diff). Do not
+praise, grade, or pass judgment on code the PR didn't touch — a strength or a
+"needs-rework" reason that's actually about an unrelated, already-merged change
+misrepresents the PR to anyone reading the headline. A genuine issue you spot in
+a file outside the diff still goes in `findings` (marked `Pre-existing:` / out of
+scope, with its real `path`), where the runner files it separately — but it must
+never leak into the assessment or the strengths list.
 
 ## What is NOT a finding (drop these)
 
