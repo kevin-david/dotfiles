@@ -1,6 +1,6 @@
 # Multi-model PR review — neutral prompt
 
-This file is fed verbatim to each reviewer CLI (Claude Code, Codex, Gemini) in
+This file is fed verbatim to each reviewer CLI (Claude Code, Codex, Antigravity) in
 headless mode by `multi_model_review.py`. The runner substitutes the `{{...}}`
 tokens before handing it to each model. Keep it harness-neutral and
 repo-neutral: no tool names, no skill names, nothing specific to one CLI or one
