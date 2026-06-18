@@ -11,13 +11,14 @@ Cross-harness by construction: orchestration lives here, not inside any one
 CLI's skill/workflow system, so adding a model is one entry in LANES.
 
 Posting policy:
-  - Public repos          -> dry run by default (opt in with --post).
+  - Public repos          -> report-only by default (opt in with --post).
   - Private/internal repos -> post automatically ("let it fly").
-  - --post / --dry-run override the visibility default.
+  - --post / --report override the visibility default.
 
 GitHub access is via the `gh` CLI (reuses your existing auth — no token
 handling, no extra dependency). Stdlib only.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,14 +31,75 @@ import sys
 import tempfile
 import threading
 import time
-from collections import namedtuple
+from dataclasses import dataclass, field
+from io import TextIOWrapper
 from pathlib import Path
-from typing import NoReturn
+from subprocess import CompletedProcess
+from typing import Literal, NamedTuple, NewType, NoReturn, TypedDict, cast
 
-# A lane's outcome: its final text plus the exit code / stderr of the CLI, so a
-# crashed lane (bad auth, untrusted dir) is told apart from one that ran fine
-# and found nothing. Without the code, both look like "no output".
-LaneResult = namedtuple("LaneResult", "out code err")
+# Brands for the two bare-str ids that get passed positionally and would
+# silently swap: a git commit id and a git ref name read the same to the type
+# checker as any other str, so `diff(base, head)` with the args flipped would
+# type-check fine. NewType makes that a type error.
+Sha = NewType("Sha", str)  # a git commit id (head, base tip, merge-base, commit_id)
+Ref = NewType("Ref", str)  # a git ref name (base branch)
+
+Mode = Literal["post", "report"]
+Severity = Literal["Critical", "Important", "Suggestion"]
+
+
+class LaneResult(NamedTuple):
+    """A lane's outcome: its final text plus the exit code / stderr of the CLI, so a
+    crashed lane (bad auth, untrusted dir) is told apart from one that ran fine
+    and found nothing. Without the code, both look like "no output"."""
+
+    out: str
+    code: int
+    err: str
+
+
+class Finding(TypedDict, total=False):
+    """One model-emitted finding. ``total=False`` because this is the untrusted
+    JSON seam: any key may be absent, which is exactly what the inline-vs-summary
+    routing and ``_as_int`` guards already handle per-field."""
+
+    path: str
+    line: int
+    start_line: int
+    severity: Severity
+    title: str
+    confidence: float
+    body: str
+
+
+class LaneReview(TypedDict, total=False):
+    """A lane's full parsed review block. ``total=False`` pairs with the
+    ``REQUIRED_KEYS`` presence check: missing sections are detected and flagged,
+    not assumed present."""
+
+    eligible: bool
+    method: str
+    assessment: str
+    strengths: list[str]
+    description_notes: list[str]
+    findings: list[Finding]
+
+
+@dataclass
+class ReviewCtx:
+    """Threaded through lane processing and report building: the run's mode and
+    target, the set of commentable diff lines, and the accumulating lane tallies."""
+
+    mode: Mode
+    slug: str
+    pr: str
+    head: Sha
+    diff_lines: dict[str, set[int]]
+    pr_title: str
+    failed: list[str] = field(default_factory=list)
+    incomplete: list[str] = field(default_factory=list)
+    reports: list[str] = field(default_factory=list)
+
 
 PROMPT_TEMPLATE = Path(__file__).resolve().parent / "review-prompt.md"
 SENTINEL_OPEN = "<<<REVIEW_JSON"
@@ -63,14 +125,21 @@ MODELS = {
 }
 
 
+SEVERITY_RANK = {"Critical": 0, "Important": 1, "Suggestion": 2}
+# Every section the prompt forces a reviewer to emit. A block missing any of
+# these didn't do the work — the lane is flagged incomplete and its verdict
+# discounted, rather than silently trusted as a clean pass.
+REQUIRED_KEYS = ("eligible", "method", "assessment", "strengths", "description_notes", "findings")
+
+
 def die(msg: str) -> NoReturn:
     print(f"error: {msg}", file=sys.stderr)
     raise SystemExit(1)
 
 
-def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+def run(cmd: list[str], **kw) -> CompletedProcess[str]:
     """Run a command, capturing text output. Does not raise on nonzero."""
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, **kw)
 
 
 def run_ok(cmd: list[str], **kw) -> str:
@@ -86,7 +155,7 @@ def tag_for(lane: str) -> str:
 
 
 # --- prompt ------------------------------------------------------------------
-def render_prompt(template: str, *, tag: str, base: str, slug: str, head: str, pr: str) -> str:
+def render_prompt(template: str, *, tag: str, base: Sha, slug: str, head: Sha, pr: str, body: str) -> str:
     # The reviewer label is injected (not asked for) so a model can't mislabel
     # itself in the posted tag.
     repl = {
@@ -99,7 +168,9 @@ def render_prompt(template: str, *, tag: str, base: str, slug: str, head: str, p
     }
     for k, v in repl.items():
         template = template.replace(k, v)
-    return template
+    # PR_BODY last: its text is author-controlled and may itself contain a
+    # `{{...}}` token, so substitute it after every real token is resolved.
+    return template.replace("{{PR_BODY}}", body.strip() or "(no description)")
 
 
 # --- lanes -------------------------------------------------------------------
@@ -116,9 +187,18 @@ def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
 
 def lane_codex(prompt: str, wt: str, out: Path) -> LaneResult:
     last = out / "codex.last"
-    cmd = ["codex", "exec", "-s", "read-only", "-C", wt,
-           "-c", f'model_reasoning_effort="{EFFORT}"',
-           "--output-last-message", str(last)]
+    cmd = [
+        "codex",
+        "exec",
+        "-s",
+        "read-only",
+        "-C",
+        wt,
+        "-c",
+        f'model_reasoning_effort="{EFFORT}"',
+        "--output-last-message",
+        str(last),
+    ]
     if MODELS["codex"]:
         cmd += ["-m", MODELS["codex"]]
     cmd += [prompt]
@@ -145,7 +225,7 @@ LANES = {"claude": lane_claude, "codex": lane_codex, "gemini": lane_gemini}
 
 
 # --- findings ----------------------------------------------------------------
-def extract_findings(raw: str) -> dict | None:
+def extract_findings(raw: str) -> LaneReview | None:
     """Pull the JSON object between the sentinels. None if absent/invalid."""
     i = raw.find(SENTINEL_OPEN)
     if i == -1:
@@ -162,8 +242,10 @@ def extract_findings(raw: str) -> dict | None:
 
 def _as_int(v: object) -> int | None:
     """Coerce a model-supplied line number to int, or None if it isn't one."""
+    if not isinstance(v, (int, float, str)):
+        return None
     try:
-        return int(v)  # type: ignore[arg-type]
+        return int(v)
     except (TypeError, ValueError):
         return None
 
@@ -177,7 +259,7 @@ def _hunk_new_start(header: str) -> int:
         return 0
 
 
-def diff_commentable_lines(base: str, head: str) -> dict[str, set[int]]:
+def diff_commentable_lines(base: Sha, head: Sha) -> dict[str, set[int]]:
     """RIGHT-side line numbers GitHub will accept an inline comment on, per file:
     the added/context lines inside a hunk of ``base..head``. Used to route a
     finding to inline (its line is in the diff) vs. the summary (it isn't) WITHOUT
@@ -196,7 +278,7 @@ def diff_commentable_lines(base: str, head: str) -> dict[str, set[int]]:
         elif not in_hunk:
             if ln.startswith("+++ "):
                 p = ln[4:].strip()
-                path = None if p == "/dev/null" else (p[2:] if p.startswith("b/") else p)
+                path = None if p == "/dev/null" else p.removeprefix("b/")
                 if path:
                     files.setdefault(path, set())
             elif ln.startswith("@@"):
@@ -205,11 +287,7 @@ def diff_commentable_lines(base: str, head: str) -> dict[str, set[int]]:
         elif ln.startswith("@@"):
             newln = _hunk_new_start(ln)
             in_hunk = newln > 0
-        elif ln.startswith("+"):
-            if path:
-                files[path].add(newln)
-            newln += 1
-        elif ln.startswith(" "):
+        elif ln.startswith(("+", " ")):  # added or context line: both RIGHT-side commentable
             if path:
                 files[path].add(newln)
             newln += 1
@@ -218,21 +296,32 @@ def diff_commentable_lines(base: str, head: str) -> dict[str, set[int]]:
     return files
 
 
-def post_inline(slug: str, pr: str, head: str, f: dict, body: str, line: int) -> subprocess.CompletedProcess:
+def post_inline(slug: str, pr: str, head: Sha, f: Finding, body: str, line: int) -> CompletedProcess[str]:
     """One review comment per finding => its own resolvable thread."""
-    cmd = ["gh", "api", "--method", "POST", f"repos/{slug}/pulls/{pr}/comments",
-           "-f", f"commit_id={head}",
-           "-f", f"path={f['path']}",
-           "-f", "side=RIGHT",
-           "-F", f"line={line}",
-           "-f", f"body={body}"]
+    cmd = [
+        "gh",
+        "api",
+        "--method",
+        "POST",
+        f"repos/{slug}/pulls/{pr}/comments",
+        "-f",
+        f"commit_id={head}",
+        "-f",
+        f"path={f['path']}",
+        "-f",
+        "side=RIGHT",
+        "-F",
+        f"line={line}",
+        "-f",
+        f"body={body}",
+    ]
     start = _as_int(f.get("start_line"))
     if start is not None:
         cmd += ["-f", "start_side=RIGHT", "-F", f"start_line={start}"]
     return run(cmd)
 
 
-def process_lane(lane: str, res: LaneResult, ctx: dict, out: Path) -> None:
+def process_lane(lane: str, res: LaneResult, ctx: ReviewCtx, out: Path) -> None:
     tag = tag_for(lane)
     raw = res.out
     data = extract_findings(raw)
@@ -243,11 +332,10 @@ def process_lane(lane: str, res: LaneResult, ctx: dict, out: Path) -> None:
     # no-findings run still emits a JSON block, so data would not be None here.
     if data is None and (res.code != 0 or not raw.strip()):
         tail = (res.err or raw).strip().splitlines()[-4:] or ["(no stderr captured)"]
-        print(f"[{lane}] FAILED — exit {res.code}, no findings produced. Last stderr:",
-              file=sys.stderr)
+        print(f"[{lane}] FAILED — exit {res.code}, no findings produced. Last stderr:", file=sys.stderr)
         for line in tail:
             print(f"    {line}", file=sys.stderr)
-        ctx["failed"].append(lane)
+        ctx.failed.append(lane)
         return
 
     if data is None:
@@ -256,8 +344,17 @@ def process_lane(lane: str, res: LaneResult, ctx: dict, out: Path) -> None:
         _post_or_print(lane, "raw summary", text, ctx)
         return
 
-    findings = [f for f in data.get("findings", [])
-                if f.get("confidence", 100) >= THRESHOLD]
+    # Presence check: a lane that dropped a required section didn't review to the
+    # contract. Surface which keys are missing and flag the lane so its verdict is
+    # read with suspicion (a "no findings / mergeable" from an incomplete pass is
+    # not evidence). We still render what it did return.
+    missing = [k for k in REQUIRED_KEYS if k not in data]
+    if missing:
+        print(f"  [{lane}] INCOMPLETE — missing required section(s): {', '.join(missing)}", file=sys.stderr)
+        ctx.incomplete.append(f"{lane} (missing: {', '.join(missing)})")
+
+    findings = [f for f in data.get("findings", []) if f.get("confidence", 100) >= THRESHOLD]
+    findings.sort(key=lambda f: SEVERITY_RANK.get(f.get("severity", "Suggestion"), 3))
     # Two buckets, kept apart so a finding about code this PR never touched can't
     # masquerade as part of the verdict on the PR: `inscope` = findings on a
     # changed file that just couldn't be anchored to a hunk line; `offscope` =
@@ -272,13 +369,13 @@ def process_lane(lane: str, res: LaneResult, ctx: dict, out: Path) -> None:
         comment = f"**{tag}** **{sev}** — {title}\n\n{fbody}"
         path = f.get("path")
         line = _as_int(f.get("line"))
-        in_pr_file = bool(path) and path in ctx["diff_lines"]
+        in_pr_file = bool(path) and path in ctx.diff_lines
         # Inline-postable only if the anchor lands on a line GitHub accepts: one
         # inside a changed hunk. Everything else routes to the summary directly
-        # rather than firing a POST we know would 422; dry runs route all there.
-        anchorable = in_pr_file and line is not None and line in ctx["diff_lines"][path]
-        if ctx["mode"] == "post" and anchorable:
-            p = post_inline(ctx["slug"], ctx["pr"], ctx["head"], f, comment, line)
+        # rather than firing a POST we know would 422; report runs route all there.
+        anchorable = in_pr_file and line is not None and path is not None and line in ctx.diff_lines[path]
+        if ctx.mode == "post" and anchorable:
+            p = post_inline(ctx.slug, ctx.pr, ctx.head, f, comment, line)
             if p.returncode == 0:
                 print(f"  [{lane}] inline {sev} @ {path}:{line}")
                 continue
@@ -297,33 +394,80 @@ def process_lane(lane: str, res: LaneResult, ctx: dict, out: Path) -> None:
     # Per-model summary: assessment + strengths describe THIS PR's diff; the two
     # buckets render under distinct headers so out-of-scope findings read as
     # routing for a human, not as a verdict on this PR.
-    parts = [f"**{tag}** — review summary", "",
-             f"**Assessment:** {data.get('assessment', 'n/a')}", ""]
+    head_line = f"**{tag}** — review summary" if ctx.mode == "post" else f"## {tag}"
+    parts = [head_line, ""]
+    if missing:
+        parts += [
+            f"> ⚠ **Incomplete review** — missing section(s): {', '.join(missing)}. "
+            "Treat the verdict below with suspicion.",
+            "",
+        ]
+    parts += [f"**Assessment:** {data.get('assessment', 'n/a')}", ""]
+    # The `method` (how-it-was-reviewed) section is proof-of-work for whoever reads
+    # the review, not the PR author — show it in the report, keep posted comments lean.
+    method = data.get("method")
+    if method and ctx.mode != "post":
+        parts += ["**How it was reviewed:**", method, ""]
     strengths = data.get("strengths") or []
     if strengths:
         parts.append("**Strengths:**")
         parts += [f"- {s}" for s in strengths]
         parts.append("")
+    # PR-description feedback has no diff line to anchor to, so it only ever
+    # lands here in the summary, never inline.
+    notes = data.get("description_notes") or []
+    if notes:
+        parts.append("**PR description — tighten:**")
+        parts += [f"- {n}" for n in notes]
+        parts.append("")
     if inscope:
-        header = ("**Findings not anchorable to a changed line:**"
-                  if ctx["mode"] == "post" else "**Findings (dry run — not posted):**")
+        header = (
+            "**Findings not anchorable to a changed line:**" if ctx.mode == "post" else "**Findings (not posted):**"
+        )
         parts += [header, "", *inscope, ""]
     if offscope:
-        parts += ["**Out of scope — findings in files this PR did not change "
-                  "(surfaced for routing, not part of the verdict on this PR):**",
-                  "", *offscope]
+        parts += [
+            "**Out of scope — findings in files this PR did not change "
+            "(surfaced for routing, not part of the verdict on this PR):**",
+            "",
+            *offscope,
+        ]
     _post_or_print(lane, "summary comment", "\n".join(parts), ctx)
 
 
-def _post_or_print(lane: str, what: str, body: str, ctx: dict) -> None:
-    if ctx["mode"] == "post":
-        p = run(["gh", "pr", "comment", ctx["pr"], "-R", ctx["slug"], "--body-file", "-"], input=body)
+def _post_or_print(lane: str, what: str, body: str, ctx: ReviewCtx) -> None:
+    if ctx.mode == "post":
+        p = run(["gh", "pr", "comment", ctx.pr, "-R", ctx.slug, "--body-file", "-"], input=body)
         if p.returncode == 0:
             print(f"[{lane}] posted {what}")
         else:
             print(f"[{lane}] failed to post {what}: {p.stderr.strip()}", file=sys.stderr)
     else:
-        print(f"----- {lane} {what} (dry run) -----\n{body}\n")
+        # Don't-send mode: collect each lane's section for one consolidated report
+        # (built and written in main) instead of dumping loose blocks to stdout.
+        ctx.reports.append(body)
+        print(f"[{lane}] captured {what} for report")
+
+
+def build_report(ctx: ReviewCtx, base_ref: Ref, base: Sha, lanes: list[str]) -> str:
+    """Assemble the per-lane sections into one readable Markdown review."""
+    head = [f"# Multi-model review — {ctx.slug} PR #{ctx.pr}"]
+    if ctx.pr_title:
+        head.append(f"**{ctx.pr_title}**")
+    head += [
+        "",
+        f"`{base_ref}`@`{base[:12]}` … head `{ctx.head[:12]}` · lanes: {', '.join(lanes)} · threshold {THRESHOLD}",
+        "",
+    ]
+    sections = ctx.reports or ["_No lane produced a review._"]
+    report = "\n".join(head) + "\n" + "\n\n---\n\n".join(sections)
+    if ctx.incomplete:
+        report += "\n\n---\n\n> ⚠ incomplete reviews (missing required sections — verdicts discounted): " + "; ".join(
+            ctx.incomplete
+        )
+    if ctx.failed:
+        report += "\n\n---\n\n> ⚠ lanes that produced no review (crashed): " + ", ".join(ctx.failed)
+    return report
 
 
 # --- main --------------------------------------------------------------------
@@ -331,22 +475,31 @@ def main() -> None:
     # Python block-buffers stdout/stderr when they're redirected to a file
     # (background / headless runs), so progress stays invisible until the buffer
     # fills or the process exits. Force line buffering so each line streams live.
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+    # ty types sys.stdout/stderr as TextIO, which lacks reconfigure(); at runtime
+    # they're TextIOWrapper, which has it.
+    cast(TextIOWrapper, sys.stdout).reconfigure(line_buffering=True)
+    cast(TextIOWrapper, sys.stderr).reconfigure(line_buffering=True)
 
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pr", help="PR number")
     ap.add_argument("--base", help="override base branch")
-    ap.add_argument("--models", default="claude,codex,gemini",
-                    help="comma-separated lanes to run")
+    ap.add_argument("--models", default="claude,codex,gemini", help="comma-separated lanes to run")
     ap.add_argument("--post", action="store_true", help="force posting")
-    ap.add_argument("--dry-run", action="store_true", help="force preview, post nothing")
+    ap.add_argument(
+        "--report",
+        nargs="?",
+        const="",
+        metavar="FILE",
+        help="don't post; write the consolidated review to FILE "
+        "(default: a path under the temp output dir). The "
+        "post-nothing mode — use it to preview, or to review "
+        "someone else's PR without touching it.",
+    )
     ap.add_argument("--keep-worktree", action="store_true")
     args = ap.parse_args()
 
-    if args.post and args.dry_run:
-        die("--post and --dry-run are mutually exclusive")
+    if args.post and args.report is not None:
+        die("--post and --report are mutually exclusive")
     for tool in ("gh", "git"):
         if not shutil.which(tool):
             die(f"{tool} not found")
@@ -354,22 +507,22 @@ def main() -> None:
         die(f"prompt template missing: {PROMPT_TEMPLATE}")
 
     pr = args.pr
-    meta = json.loads(run_ok(["gh", "pr", "view", pr, "--json",
-                              "state,isDraft,baseRefName,headRefOid"]))
+    meta = json.loads(run_ok(["gh", "pr", "view", pr, "--json", "state,isDraft,baseRefName,headRefOid,body,title"]))
     repo = json.loads(run_ok(["gh", "repo", "view", "--json", "nameWithOwner,visibility"]))
     slug = repo["nameWithOwner"]
     visibility = repo["visibility"]  # PUBLIC | PRIVATE | INTERNAL
-    head = meta["headRefOid"]
-    base_ref = args.base or meta["baseRefName"]
+    head = Sha(meta["headRefOid"])
+    base_ref = Ref(args.base or meta["baseRefName"])
     if not head:
         die(f"could not resolve PR #{pr} (is gh authenticated?)")
 
-    if args.dry_run:
-        mode = "dry"
+    mode: Mode
+    if args.report is not None:
+        mode = "report"
     elif args.post:
         mode = "post"
     else:
-        mode = "dry" if visibility == "PUBLIC" else "post"
+        mode = "report" if visibility == "PUBLIC" else "post"
 
     if meta["state"] != "OPEN":
         print(f"note: PR #{pr} is {meta['state']}.", file=sys.stderr)
@@ -390,28 +543,55 @@ def main() -> None:
     if not lanes:
         die("no requested model CLIs are installed")
 
-    # Resolve the base to the PR's actual fork point: fetch the head and the base
-    # branch fresh from origin and take their merge-base, rather than diffing
-    # against whatever a local branch named e.g. `main` happens to point at. A
-    # stale local base drags already-merged commits the PR never touched into the
-    # diff, so reviewers burn effort on unrelated code and their findings 422 (the
-    # lines aren't in the PR's diff). merge-base..HEAD is exactly the PR's changes.
-    if (run(["git", "fetch", "--quiet", "origin", head]).returncode != 0
-            and run(["git", "fetch", "--quiet", "origin", f"pull/{pr}/head"]).returncode != 0):
+    # Resolve the base to the PR's actual fork point, then diff merge-base..HEAD —
+    # exactly the PR's changes. The base tip we take the merge-base against must be
+    # the commit GitHub computed the PR's diff against, NOT the live base-branch
+    # tip: once a PR is merged, the live branch contains the PR's commits, so
+    # merge-base(live tip, head) == head and the diff is empty. GitHub records and
+    # freezes that base as `base.sha`, so prefer it; --base overrides; the live tip
+    # is the last-resort fallback (and a stale *local* base would drag already-
+    # merged commits in, which is why we always fetch fresh from origin).
+    if (
+        run(["git", "fetch", "--quiet", "origin", head]).returncode != 0
+        and run(["git", "fetch", "--quiet", "origin", f"pull/{pr}/head"]).returncode != 0
+    ):
         die(f"could not fetch PR head {head}")
-    if run(["git", "fetch", "--quiet", "origin", base_ref]).returncode == 0:
-        base_tip = run_ok(["git", "rev-parse", "FETCH_HEAD"]).strip()
-    else:  # --base may be a local ref/sha (e.g. origin/main), not a branch on origin
-        p = run(["git", "rev-parse", "--verify", "--quiet", base_ref])
-        if p.returncode != 0:
-            die(f"could not resolve base ref {base_ref}")
-        base_tip = p.stdout.strip()
-    base = run_ok(["git", "merge-base", base_tip, head]).strip()
+    if args.base:
+        if run(["git", "fetch", "--quiet", "origin", args.base]).returncode == 0:
+            base_tip = run_ok(["git", "rev-parse", "FETCH_HEAD"]).strip()
+        else:  # --base may be a local ref/sha (e.g. origin/main), not a branch on origin
+            p = run(["git", "rev-parse", "--verify", "--quiet", args.base])
+            if p.returncode != 0:
+                die(f"could not resolve base ref {args.base}")
+            base_tip = p.stdout.strip()
+    else:
+        live_tip = (
+            run_ok(["git", "rev-parse", "FETCH_HEAD"]).strip()
+            if run(["git", "fetch", "--quiet", "origin", base_ref]).returncode == 0
+            else ""
+        )
+        recorded = run_ok(["gh", "api", f"repos/{slug}/pulls/{pr}", "--jq", ".base.sha"]).strip()
+        if recorded and run(["git", "cat-file", "-e", recorded]).returncode != 0:
+            run(["git", "fetch", "--quiet", "origin", recorded])  # bring it local if reachable
+        if recorded and run(["git", "cat-file", "-e", recorded]).returncode == 0:
+            base_tip = recorded
+        elif live_tip:
+            print(
+                f"note: PR base.sha {recorded[:12] or '(none)'} unavailable locally; "
+                "using live base tip (a merged-PR diff may be empty)",
+                file=sys.stderr,
+            )
+            base_tip = live_tip
+        else:
+            die(f"could not resolve a base for PR #{pr}")
+    base = Sha(run_ok(["git", "merge-base", base_tip, head]).strip())
     diff_lines = diff_commentable_lines(base, head)
 
     print(f"Reviewing PR #{pr}  (base={base_ref}@{base[:12]}  head={head[:12]}  repo={slug}  {visibility})")
-    print(f"Lanes: {','.join(lanes)}   effort={EFFORT}   threshold={THRESHOLD}   mode={mode}   "
-          f"({len(diff_lines)} changed files)")
+    print(
+        f"Lanes: {','.join(lanes)}   effort={EFFORT}   threshold={THRESHOLD}   mode={mode}   "
+        f"({len(diff_lines)} changed files)"
+    )
     if mode == "post":
         print(f">>> will POST inline comments to PR #{pr}")
 
@@ -425,12 +605,12 @@ def main() -> None:
     # switched out from under them. The worktree is removed on exit.
     run_ok(["git", "worktree", "add", "--detach", wt, head])
 
-    ctx = {"mode": mode, "slug": slug, "pr": pr, "head": head,
-           "diff_lines": diff_lines, "failed": []}
+    ctx = ReviewCtx(mode=mode, slug=slug, pr=pr, head=head, diff_lines=diff_lines, pr_title=meta.get("title", ""))
     try:
         prompts = {
-            lane: render_prompt(template, tag=tag_for(lane), base=base,
-                                slug=slug, head=head, pr=pr)
+            lane: render_prompt(
+                template, tag=tag_for(lane), base=base, slug=slug, head=head, pr=pr, body=meta.get("body", "")
+            )
             for lane in lanes
         }
         for lane in lanes:
@@ -481,14 +661,19 @@ def main() -> None:
         else:
             run(["git", "worktree", "remove", "--force", wt])
 
-    if ctx["failed"]:
-        print(f"\n⚠ lanes that failed (no review posted): {', '.join(ctx['failed'])}",
-              file=sys.stderr)
+    if ctx.incomplete:
+        print(f"\n⚠ incomplete reviews (missing required sections): {'; '.join(ctx.incomplete)}", file=sys.stderr)
+    if ctx.failed:
+        print(f"\n⚠ lanes that failed (no review posted): {', '.join(ctx.failed)}", file=sys.stderr)
 
     if mode != "post":
-        print(f"\n(dry run — nothing posted. Outputs in {out})")
+        report = build_report(ctx, base_ref, base, lanes)
+        report_path = Path(args.report) if args.report else (out / "review.md")
+        report_path.write_text(report)
+        print("\n" + report)
+        print(f"\n(report mode — nothing posted. Review written to {report_path})")
 
-    if ctx["failed"]:
+    if ctx.failed:
         raise SystemExit(1)
 
 

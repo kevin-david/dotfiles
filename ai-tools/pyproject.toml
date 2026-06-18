@@ -1,0 +1,45 @@
+# Lint/type config for the ai-tools scripts. Mirrors exchanger's house bar
+# (ruff select + ty all=error), minus the legacy-codebase ignore list — these
+# are greenfield single files, so they hold the stricter line.
+#
+# Run via uvx (no Docker, no install — these scripts are stdlib-only):
+#   uvx ruff check . && uvx ruff format --check . && uvx ty check
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    # Cherry-picked beyond exchanger's set: each is a real improvement on a
+    # clean file, not the legacy-concession noise that `ALL` would surface.
+    "PYI024", # typing.NamedTuple over collections.namedtuple (typed fields)
+    "FURB188", # str.removeprefix/removesuffix over manual slicing
+    "PLW1510", # subprocess.run needs an explicit check= (loud intent)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# --- ty (Astral type checker) --------------------------------------------------
+[tool.ty.environment]
+python-version = "3.13"
+python-platform = "linux"
+
+[tool.ty.rules]
+# Everything at error, matching exchanger. New rules in a ty upgrade
+# auto-enforce — loud on upgrade beats silently unchecked.
+all = "error"
+
+[tool.ty.src]
+include = ["multi_model_review.py"]

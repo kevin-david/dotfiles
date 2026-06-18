@@ -47,9 +47,12 @@ If that's genuinely all this is, set `"eligible": false`, say why in
   surprised caller — not the edited line in isolation.
 - Think hard. Surface-level "looks fine" passes are worse than useless here —
   they manufacture false confidence. If you didn't trace it, don't bless it.
-- Form your findings **independently**. Do **not** read the PR's existing review
-  threads or comments — they will anchor you onto someone else's (possibly
-  wrong) framing. Review the code, not the conversation.
+- Form your findings **independently**. Do **not** read, fetch, or otherwise
+  consult the PR's existing review threads or comments — not via `gh` (e.g.
+  `gh pr view --comments`, the `pulls/comments` API), not via the web, not by any
+  means. They will anchor you onto someone else's (possibly wrong) framing.
+  Review the code, not the conversation. (The PR *description* reproduced above is
+  fine — that's the author's statement of intent, not reviewer commentary.)
 
 ## What to look for
 
@@ -77,8 +80,21 @@ not a ceiling.
    pin current behavior without asserting anything meaningful, or that test
    removed functionality.
 
-5. **Comment accuracy.** Comments that are now wrong vs. the code, comment rot,
-   or comments that restate *what* the code does instead of justifying *why*.
+5. **Comment & prose conciseness.** Comments now wrong vs. the code (rot), or
+   that restate *what* the code does instead of justifying *why*. Flag **brittle**
+   comments too, but draw the line carefully: a comment that explains *why the code
+   is the way it is* — a durable external fact, constraint, or discovery — is good
+   even when it cites a date ("on 2026-05-04 we found the upstream API returns X, so
+   we handle it this way"). What's brittle is a comment that narrates *the edit*: what the
+   previous version did, which alternative was rejected and why ("we used to do X,
+   switched to Y because it seemed more correct"). That's PR/commit history — it
+   rots on the next edit and adds nothing to the code as it stands. Recommend
+   dropping that kind, not the why-it's-this-way kind. Also
+   flag **bloat** — in code comments and in any prose this PR changed (Markdown
+   docs, READMEs): hedging, throat-clearing, restating the obvious, three sentences
+   where one does. Machine-written prose tends to over-explain and pad; cut it.
+   Quote the bloated passage and give the tighter rewrite — a concrete edit, never
+   a bare "could be more concise."
 
 6. **Type design / invariants** (when new types or schemas are added). Are
    invariants expressed in the type, or left implicit and enforceable only by
@@ -93,6 +109,18 @@ not a ceiling.
    *shotgun surgery* (one logical change forcing edits in many places), deep
    nesting, and god functions/classes. Flag the smell, name it, and suggest the
    refactor — but only when it's worth the churn, not as dogma.
+
+## Review the PR description too
+
+LLM-drafted PR descriptions run long — hold this one to the same bar as code
+comments (lens 5): why over what, no padding, no hedging. It isn't part of the
+diff, so it has no line to anchor to; put any feedback in the `description_notes`
+output field (**not** `findings`), quoting the bloated passage and giving the
+tighter rewrite. If it's already tight, or empty, say nothing — don't manufacture
+a note to look thorough.
+
+PR description (verbatim, may be empty):
+{{PR_BODY}}
 
 ## Honor the repo's conventions
 
@@ -203,8 +231,10 @@ the block is parsed):
 <<<REVIEW_JSON
 {
   "eligible": true,
+  "method": "How you ACTUALLY reviewed this — proof of work, not a restatement of the lenses. Name the specific paths you traced. Down-stack: the functions/queries/schemas this change now calls, and whether their contracts still hold. Up-stack: the callers/consumers you followed (name them), and whether the new behavior reaches an observable surface or breaks any of them. A generic 'I read the diff and checked for bugs' is a FAILED section.",
   "assessment": "one line: mergeable | mergeable-with-fixes | needs-rework, and why",
   "strengths": ["what this PR does well", "..."],
+  "description_notes": ["quote a bloated passage of the PR description, then the tighter rewrite", "..."],
   "findings": [
     {
       "path": "src/path/to/file.ext",
@@ -221,12 +251,22 @@ REVIEW_JSON>>>
 ```
 
 Rules for the block:
+- **Every top-level key above is REQUIRED — `eligible`, `method`, `assessment`,
+  `strengths`, `description_notes`, `findings`.** When a section has nothing to
+  say, emit it *explicitly empty* (`[]` for the arrays) — **never omit a key.** A
+  missing key is a failed review: the runner flags the lane as incomplete and a
+  human discounts its verdict, because a review that skipped a section didn't do
+  the work. `method` is never empty — you reviewed somehow; say how.
 - Valid JSON, no trailing commas, no comments. `start_line` is optional (omit
   for a single line). `severity` ∈ `Critical | Important | Suggestion`.
+- `description_notes`: `[]` when the PR description needs no tightening (it
+  often won't — don't manufacture a note). It is for the description only; bloat
+  in *changed* comments or docs is a normal `findings` entry anchored to its line.
 - Include only findings scoring **≥ {{THRESHOLD}}**; the runner filters on
   `confidence` too, but don't make it do your job.
 - If the PR is ineligible (closed/draft/bot/trivial), emit `"eligible": false`
-  with an empty `findings` array and say why in `assessment`.
+  with an empty `findings` array and say why in `assessment` — `method` still
+  states what you checked to reach that call.
 - If nothing clears the bar, emit an empty `findings` array. Do not pad.
 
 State findings with the confidence you earned by verifying them — a human will
