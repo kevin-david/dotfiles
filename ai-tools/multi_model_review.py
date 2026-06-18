@@ -155,12 +155,9 @@ def tag_for(lane: str) -> str:
 
 
 # --- prompt ------------------------------------------------------------------
-def render_prompt(template: str, *, tag: str, base: Sha, slug: str, head: Sha, pr: str, body: str) -> str:
-    # The reviewer label is injected (not asked for) so a model can't mislabel
-    # itself in the posted tag.
+def render_prompt(template: str, *, base: Sha, slug: str, head: Sha, pr: str, body: str) -> str:
     repl = {
-        "{{REVIEWER_TAG}}": tag,
-        "{{BASE_REF}}": base,
+        "{{BASE_SHA}}": base,
         "{{REPO_SLUG}}": slug,
         "{{HEAD_SHA}}": head,
         "{{PR_NUMBER}}": pr,
@@ -608,9 +605,7 @@ def main() -> None:
     ctx = ReviewCtx(mode=mode, slug=slug, pr=pr, head=head, diff_lines=diff_lines, pr_title=meta.get("title", ""))
     try:
         prompts = {
-            lane: render_prompt(
-                template, tag=tag_for(lane), base=base, slug=slug, head=head, pr=pr, body=meta.get("body", "")
-            )
+            lane: render_prompt(template, base=base, slug=slug, head=head, pr=pr, body=meta.get("body", ""))
             for lane in lanes
         }
         for lane in lanes:

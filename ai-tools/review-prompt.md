@@ -8,7 +8,9 @@ codebase. Repo-specific rules come from the target repo itself (see "Honor the
 repo's conventions" below), not from here.
 
 You are reviewing the changes on the checked-out branch (a worktree at the PR
-head) against base `{{BASE_REF}}`. The diff is `git diff {{BASE_REF}}...HEAD`.
+head) against base commit `{{BASE_SHA}}` (the merge-base of the PR's recorded
+base and its head — diff against this, not against a live branch ref, which for
+a merged PR would be empty). The diff is `git diff {{BASE_SHA}}...HEAD`.
 Repo: `{{REPO_SLUG}}`. PR: #{{PR_NUMBER}}. Head commit: `{{HEAD_SHA}}`.
 
 ## Before you start
@@ -25,7 +27,7 @@ automated dependency bump, a generated lockfile, a bare version-string change.
 If that's genuinely all this is, set `"eligible": false`, say why in
 `assessment`, and emit no findings. When in doubt, review it.
 
-## How to work — this is a large PR, go deep
+## How to work — go deep
 
 - Work **chunk-by-chunk by subsystem and by data flow**, not file-by-file.
   Trace how the relevant unit (a request, an entity, a transaction, an event)
@@ -146,7 +148,7 @@ correct as written:
 - For a claimed behavior change, find the concrete input that exhibits the
   difference. If you can't construct one, you don't have a finding.
 - **Before calling anything a regression, check what the code did *before* this
-  PR** (`git diff {{BASE_REF}}...HEAD`, or read the base version of the
+  PR** (`git diff {{BASE_SHA}}...HEAD`, or read the base version of the
   function). If the behavior you're flagging is identical pre- and post-diff,
   it is **not** a regression — it's pre-existing. Reclassify it under the
   pre-existing rules below and drop its severity accordingly. "This path looks
@@ -185,7 +187,7 @@ diff didn't touch, so they'll land in the summary comment rather than inline;
 that's fine.
 
 **Keep the verdict scoped to the diff.** Your `assessment` and `strengths` must
-describe only what *this PR changed* (the `{{BASE_REF}}...HEAD` diff). Do not
+describe only what *this PR changed* (the `{{BASE_SHA}}...HEAD` diff). Do not
 praise, grade, or pass judgment on code the PR didn't touch — a strength or a
 "needs-rework" reason that's actually about an unrelated, already-merged change
 misrepresents the PR to anyone reading the headline. A genuine issue you spot in
