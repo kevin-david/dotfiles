@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Fan a single PR out to multiple model reviewers (Claude Code, Codex, Gemini).
+"""Fan a single PR out to multiple review harnesses (Claude Code, Codex, Antigravity).
 
-Each model runs headless against the same neutral prompt (review-prompt.md) and
+Each harness runs headless against the same neutral prompt (review-prompt.md) and
 emits structured findings; this runner posts them as INLINE review comments
 anchored to the changed lines, so each finding becomes its own resolvable
-thread on the PR. Cross-cutting findings are anchored once, at the model's
+thread on the PR. Cross-cutting findings are anchored once, at the reviewer's
 chosen best location.
 
 Cross-harness by construction: orchestration lives here, not inside any one
-CLI's skill/workflow system, so adding a model is one entry in LANES.
+CLI's skill/workflow system, so adding a harness is one entry in LANES.
 
 Posting policy:
   - Public repos          -> report-only by default (opt in with --post).
@@ -59,7 +59,7 @@ class LaneResult(NamedTuple):
 
 
 class Finding(TypedDict, total=False):
-    """One model-emitted finding. ``total=False`` because this is the untrusted
+    """One harness-emitted finding. ``total=False`` because this is the untrusted
     JSON seam: any key may be absent, which is exactly what the inline-vs-summary
     routing and ``_as_int`` guards already handle per-field."""
 
@@ -113,15 +113,15 @@ def env(name: str, default: str) -> str:
 EFFORT = env("REVIEW_EFFORT", "high")
 THRESHOLD = int(env("REVIEW_THRESHOLD", "50"))
 HEARTBEAT_SECS = int(env("REVIEW_HEARTBEAT_SECS", "30"))
-LABELS = {
-    "claude": env("REVIEW_CLAUDE_LABEL", "Claude Opus 4.8"),
+LANE_LABELS = {
+    "claude": env("REVIEW_CLAUDE_LABEL", "Claude"),
     "codex": env("REVIEW_CODEX_LABEL", "Codex"),
-    "gemini": env("REVIEW_GEMINI_LABEL", "Gemini"),
+    "antigravity": env("REVIEW_ANTIGRAVITY_LABEL", "Antigravity"),
 }
-MODELS = {
+LANE_MODELS = {
     "claude": env("REVIEW_CLAUDE_MODEL", "opus"),
-    "codex": env("REVIEW_CODEX_MODEL", ""),
-    "gemini": env("REVIEW_GEMINI_MODEL", ""),
+    "codex": env("REVIEW_CODEX_MODEL", "gpt-5.5"),
+    "antigravity": env("REVIEW_ANTIGRAVITY_MODEL", "Gemini 3.1 Pro (High)"),
 }
 
 
@@ -151,7 +151,13 @@ def run_ok(cmd: list[str], **kw) -> str:
 
 
 def tag_for(lane: str) -> str:
-    return f"[{LABELS[lane]}]"
+    label = LANE_LABELS[lane]
+    model = LANE_MODELS[lane]
+    if model:
+        if lane in ("claude", "codex") and EFFORT:
+            return f"[{label} ({model} / {EFFORT})]"
+        return f"[{label} ({model})]"
+    return f"[{label}]"
 
 
 # --- prompt ------------------------------------------------------------------
@@ -173,8 +179,16 @@ def render_prompt(template: str, *, base: Sha, slug: str, head: Sha, pr: str, bo
 # --- lanes -------------------------------------------------------------------
 # Each lane runs a CLI headless in the worktree and returns its raw final text.
 def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
-    model = MODELS["claude"]
-    cmd = ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"]
+    model = LANE_MODELS["claude"]
+    cmd = [
+        "claude",
+        "-p",
+        prompt,
+        "--permission-mode",
+        "bypassPermissions",
+        "--effort",
+        EFFORT,
+    ]
     if model:
         cmd += ["--model", model]
     p = run(cmd, cwd=wt)
@@ -196,8 +210,8 @@ def lane_codex(prompt: str, wt: str, out: Path) -> LaneResult:
         "--output-last-message",
         str(last),
     ]
-    if MODELS["codex"]:
-        cmd += ["-m", MODELS["codex"]]
+    if LANE_MODELS["codex"]:
+        cmd += ["-m", LANE_MODELS["codex"]]
     cmd += [prompt]
     p = run(cmd)
     (out / "codex.err").write_text(p.stderr)
@@ -206,19 +220,25 @@ def lane_codex(prompt: str, wt: str, out: Path) -> LaneResult:
     return LaneResult(text, p.returncode, p.stderr)
 
 
-def lane_gemini(prompt: str, wt: str, out: Path) -> LaneResult:
-    # The review worktree is a fresh throwaway dir Gemini has never "trusted", so
-    # it downgrades to default approval and refuses tool calls headlessly. --yolo
-    # does not override trust; --skip-trust does.
-    cmd = ["gemini", "-p", prompt, "--yolo", "--skip-trust"]
-    if MODELS["gemini"]:
-        cmd += ["-m", MODELS["gemini"]]
+def lane_antigravity(prompt: str, wt: str, out: Path) -> LaneResult:
+    # The review worktree is a fresh throwaway dir Antigravity has never "trusted",
+    # so it downgrades to default approval and refuses tool calls headlessly.
+    # --dangerously-skip-permissions bypasses approval prompts.
+    cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions", "--print-timeout", "10m"]
+    if LANE_MODELS["antigravity"]:
+        cmd += ["--model", LANE_MODELS["antigravity"]]
     p = run(cmd, cwd=wt)
-    (out / "gemini.err").write_text(p.stderr)
+    (out / "antigravity.err").write_text(p.stderr)
     return LaneResult(p.stdout, p.returncode, p.stderr)
 
 
-LANES = {"claude": lane_claude, "codex": lane_codex, "gemini": lane_gemini}
+LANES = {"claude": lane_claude, "codex": lane_codex, "antigravity": lane_antigravity}
+
+LANE_BINARIES = {
+    "claude": "claude",
+    "codex": "codex",
+    "antigravity": "agy",
+}
 
 
 # --- findings ----------------------------------------------------------------
@@ -388,7 +408,7 @@ def process_lane(lane: str, res: LaneResult, ctx: ReviewCtx, out: Path) -> None:
         bucket = "inline" if in_pr_file else "OUT-OF-SCOPE"
         print(f"  [{lane}] summary ({bucket}) {sev} @ {loc or '(no anchor)'}")
 
-    # Per-model summary: assessment + strengths describe THIS PR's diff; the two
+    # Per-lane summary: assessment + strengths describe THIS PR's diff; the two
     # buckets render under distinct headers so out-of-scope findings read as
     # routing for a human, not as a verdict on this PR.
     head_line = f"**{tag}** — review summary" if ctx.mode == "post" else f"## {tag}"
@@ -480,7 +500,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pr", help="PR number")
     ap.add_argument("--base", help="override base branch")
-    ap.add_argument("--models", default="claude,codex,gemini", help="comma-separated lanes to run")
+    ap.add_argument(
+        "--lanes",
+        dest="lanes",
+        default="claude,codex,antigravity",
+        help="comma-separated harness lanes to run",
+    )
+    ap.add_argument("--models", dest="lanes", help="deprecated alias for --lanes")
     ap.add_argument("--post", action="store_true", help="force posting")
     ap.add_argument(
         "--report",
@@ -493,7 +519,26 @@ def main() -> None:
         "someone else's PR without touching it.",
     )
     ap.add_argument("--keep-worktree", action="store_true")
+    ap.add_argument("--claude-model", help="override model for Claude Code")
+    ap.add_argument("--codex-model", help="override model for Codex")
+    ap.add_argument("--antigravity-model", help="override model for Antigravity")
+    ap.add_argument(
+        "--effort",
+        choices=["low", "medium", "high"],
+        help="override reasoning effort for models that support it (e.g. codex)",
+    )
     args = ap.parse_args()
+
+    if args.effort:
+        global EFFORT
+        EFFORT = args.effort
+
+    if args.claude_model is not None:
+        LANE_MODELS["claude"] = args.claude_model
+    if args.codex_model is not None:
+        LANE_MODELS["codex"] = args.codex_model
+    if args.antigravity_model is not None:
+        LANE_MODELS["antigravity"] = args.antigravity_model
 
     if args.post and args.report is not None:
         die("--post and --report are mutually exclusive")
@@ -526,19 +571,20 @@ def main() -> None:
     if meta["isDraft"]:
         print(f"note: PR #{pr} is a draft.", file=sys.stderr)
 
-    requested = [m.strip() for m in args.models.split(",") if m.strip()]
-    for m in requested:
-        if m not in LANES:
-            print(f"unknown lane: {m} — skipping", file=sys.stderr)
+    requested = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
+    for lane in requested:
+        if lane not in LANES:
+            print(f"unknown lane: {lane} — skipping", file=sys.stderr)
     lanes = []
-    for m in (m for m in requested if m in LANES):
-        if shutil.which(m):  # CLI binary name == lane name
-            lanes.append(m)
+    for lane in (lane for lane in requested if lane in LANES):
+        binary = LANE_BINARIES.get(lane, lane)
+        if shutil.which(binary):
+            lanes.append(lane)
         else:
-            hint = " (install: npm i -g @google/gemini-cli)" if m == "gemini" else ""
-            print(f"{m} not installed — skipping{hint}", file=sys.stderr)
+            hint = " (install the antigravity CLI 'agy')" if lane == "antigravity" else ""
+            print(f"{lane} not installed — skipping{hint}", file=sys.stderr)
     if not lanes:
-        die("no requested model CLIs are installed")
+        die("no requested review harness CLIs are installed")
 
     # Resolve the base to the PR's actual fork point, then diff merge-base..HEAD —
     # exactly the PR's changes. The base tip we take the merge-base against must be
@@ -611,7 +657,7 @@ def main() -> None:
         for lane in lanes:
             (out / f"{lane}.prompt").write_text(prompts[lane])
 
-        # Run lanes in parallel; each model explores the worktree independently.
+        # Run lanes in parallel; each harness explores the worktree independently.
         # The lanes capture each CLI's output in memory (no growing file to
         # watch), so a heartbeat reports per-lane elapsed time — enough to tell a
         # live-but-slow run from a hung one. It can't see *what* a lane is doing.

@@ -5,7 +5,6 @@ brew "bash"             # Newer GNU bash than macOS
 brew "bwm-ng"           # Live bandwidth/IO monitor
 brew "cloudflared"      # Cloudflare Tunnel client
 brew "dotnet"           # .NET SDK and runtime
-brew "gemini-cli"
 brew "gh"               # GitHub command-line interface
 brew "ghostscript"      # PostScript/PDF interpreter
 brew "go"
@@ -41,6 +40,7 @@ brew "zsh"
 
 cask_args appdir: "/Applications"
 cask "android-platform-tools"   # adb, fastboot for Android
+cask "antigravity"              # Google Antigravity CLI (agy)
 cask "autodesk-fusion"
 cask "bambu-studio"
 cask "beeper"                   # Unified chat client (Matrix, etc.)
