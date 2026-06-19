@@ -154,7 +154,7 @@ def tag_for(lane: str) -> str:
     label = LANE_LABELS[lane]
     model = LANE_MODELS[lane]
     if model:
-        if lane in ("claude", "codex"):
+        if lane in ("claude", "codex") and EFFORT:
             return f"[{label} ({model} / {EFFORT})]"
         return f"[{label} ({model})]"
     return f"[{label}]"
@@ -533,11 +533,11 @@ def main() -> None:
         global EFFORT
         EFFORT = args.effort
 
-    if args.claude_model:
+    if args.claude_model is not None:
         LANE_MODELS["claude"] = args.claude_model
-    if args.codex_model:
+    if args.codex_model is not None:
         LANE_MODELS["codex"] = args.codex_model
-    if args.antigravity_model:
+    if args.antigravity_model is not None:
         LANE_MODELS["antigravity"] = args.antigravity_model
 
     if args.post and args.report is not None:
