@@ -1,37 +1,180 @@
 #!/bin/bash
 #
-# hogs [N]
+# hogs [N] [--by-env] [--mem]
 #
-# Show the top N tasks by CPU and by disk I/O, with full command-line args.
-# Built for diagnosing a hammered Linux box (high load / lag).
+# One-shot "why is this box unhappy" triage for a Linux/Proxmox host.
+#
+#   default : load-decomposition header + top-N by CPU + top-N by disk I/O
+#             (full args, owner attribution) + crash-loop/flapping detector
+#   --by-env: cores-per-cgroup rollup (which env/container is eating the box)
+#   --mem   : top-N by RSS + swap + memory pressure (ZFS ARC shown separately)
 #
 # Notes:
-#   - `ps --sort=-%cpu` is misleading: its %CPU is a *lifetime average*, so a
-#     long-running process looks busy even when idle now. This takes a live
-#     sample instead (two top readings, keeps the second).
-#   - Run as root for full visibility; I/O needs root + kernel I/O accounting.
-#   - On the Proxmox host this lists every container/VM process in one flat list.
+#   - %CPU is a LIVE sample (two top readings), not ps's misleading lifetime avg.
+#   - The header separates the failure modes we actually hit: CPU-bound (high r,
+#     us/sy) vs I/O-stall (high b, wa) vs scheduler thrash (ctxsw) vs fork/zombie
+#     leaks. Per-process tells you "what", --by-env tells you "where".
+#   - Owner is from /proc/<pid>/cgroup; docker IDs resolve to names best-effort
+#     from the host daemon + each LXC's nested docker.
+#   - Run as root for full visibility (all users, I/O accounting, nested docker,
+#     restart counts).
 #
-# Usage: hogs           # top 20
-#        hogs 30        # top 30
-#        sudo hogs      # full I/O + all users
+# Usage:  hogs · hogs 30 · sudo hogs --by-env · sudo hogs --mem
 
-N="${1:-20}"
+N=20; BY_ENV=0; MEM=0
+for a in "$@"; do
+  case "$a" in
+    --by-env) BY_ENV=1 ;;
+    --mem)    MEM=1 ;;
+    *[!0-9]*|'') : ;;
+    *) N="$a" ;;
+  esac
+done
 
-echo "===== TOP $N BY CPU  (1s live sample, full args) ====="
-# Two samples 1s apart; keep the 2nd (the real instantaneous one). ~7 header
-# lines precede the process rows, so show N+7.
-top -bc -w 512 -o %CPU -n 2 -d 1 | awk '/^top - /{it++} it==2' | head -n "$((N + 7))"
+LXC_DOCKER=/run/current-system/sw/bin/docker   # nested docker path inside NixOS LXCs
 
+# ---------------- container map (id->name) + flapping list ----------------
+declare -A NAME
+FLAP=$(mktemp); trap 'rm -f "$FLAP"' EXIT
+
+scan_env() {            # $1=env label ("" for host); reads docker inspect lines on stdin
+  local env="$1" id nm rc st sid
+  while IFS='|' read -r id nm rc st; do
+    [ -z "$id" ] && continue
+    nm=${nm#/}; sid=${id:0:12}
+    NAME[$sid]="${env:+$env:}$nm"
+    if [ "${rc:-0}" -ge 5 ] 2>/dev/null || [ "$st" = "restarting" ]; then
+      printf '%s\t%s\t%s\t%s\n' "${env:-host}" "$nm" "$rc" "$st" >>"$FLAP"
+    fi
+  done
+}
+inspect_all() {         # $@ = docker invocation; emits id|name|restartcount|status
+  local ids; ids=$("$@" ps -aq 2>/dev/null) || return 0
+  [ -n "$ids" ] && "$@" inspect --format '{{.Id}}|{{.Name}}|{{.RestartCount}}|{{.State.Status}}' $ids 2>/dev/null
+}
+if command -v docker >/dev/null 2>&1; then
+  scan_env "" < <(inspect_all docker)
+fi
+if command -v pct >/dev/null 2>&1; then
+  for ct in $(pct list 2>/dev/null | awk 'NR>1{print $1}'); do
+    scan_env "lxc$ct" < <(inspect_all pct exec "$ct" -- "$LXC_DOCKER")
+  done
+fi
+
+owner() {               # $1=pid -> container-name | lxc:N | vm:N | docker:<id> | host
+  local cg lxc did vm
+  cg=$(tr '\0\n' '  ' < "/proc/$1/cgroup" 2>/dev/null) || { printf '?'; return; }
+  lxc=$(printf '%s' "$cg" | grep -oE '/lxc/[0-9]+' | head -1 | grep -oE '[0-9]+$')
+  did=$(printf '%s' "$cg" | grep -oE 'docker-[0-9a-f]{12}' | head -1 | sed 's/docker-//')
+  vm=$(printf '%s' "$cg"  | grep -oE 'qemu\.slice/[0-9]+' | head -1 | grep -oE '[0-9]+$')
+  if   [ -n "$did" ] && [ -n "${NAME[$did]}" ]; then printf '%s' "${NAME[$did]}"
+  elif [ -n "$did" ]; then printf '%sdocker:%s' "${lxc:+lxc$lxc/}" "$did"
+  elif [ -n "$lxc" ]; then printf 'lxc:%s' "$lxc"
+  elif [ -n "$vm"  ]; then printf 'vm:%s' "$vm"
+  else printf 'host'; fi
+}
+psi() { awk -F'[= ]' '/some/{print $3; exit}' "/proc/pressure/$1" 2>/dev/null; }
+
+# ----------------------------- header / triage -----------------------------
+echo "=================== TRIAGE ==================="
+echo "load: $(cut -d' ' -f1-3 /proc/loadavg)   cores: $(nproc)"
+set -- $(vmstat 1 2 2>/dev/null | tail -1)   # 1=r 2=b 11=in 12=cs 13=us 14=sy 15=id 16=wa
+if [ -n "${16:-}" ]; then
+  echo "runnable r=$1  blocked(D) b=$2   cpu: us=${13}% sy=${14}% id=${15}% iowait=${16}%   ctxsw=${12}/s"
+  echo "  -> high r + low idle = CPU-bound | high b + iowait = I/O-stall | huge ctxsw = thrash"
+fi
+echo "PSI some/avg10:  cpu=$(psi cpu)%  io=$(psi io)%  mem=$(psi memory)%"
+Z=$(ps -eo stat= 2>/dev/null | grep -c '^Z')
+if [ "$Z" -gt 0 ]; then
+  zp=$(ps -eo stat=,ppid= | awk '$1 ~ /^Z/{print $2}' | sort | uniq -c | sort -rn | head -1)
+  zppid=$(echo "$zp" | awk '{print $2}')
+  echo "zombies: $Z   top reaper-gap parent: $(echo "$zp" | awk '{print $1}')x under pid $zppid [$(owner "$zppid") $(ps -o comm= -p "$zppid" 2>/dev/null)]"
+fi
+
+# ----------------------------- flapping/crash-loops -----------------------------
+if [ -s "$FLAP" ]; then
+  echo
+  echo "=================== CRASH-LOOP / FLAPPING (restarts>=5 or restarting) ==================="
+  printf "%-10s %-30s %10s  %s\n" "ENV" "CONTAINER" "RESTARTS" "STATE"
+  sort -t$'\t' -k3 -rn "$FLAP" | head -n "$N" | while IFS=$'\t' read -r env nm rc st; do
+    printf "%-10s %-30s %10s  %s\n" "$env" "$nm" "$rc" "$st"
+  done
+fi
+
+# ----------------------------- top by CPU -----------------------------
 echo
-echo "===== TOP $N BY DISK I/O  (full args) ====="
+echo "=================== TOP $N BY CPU  (live sample) ==================="
+printf "%-26s %6s %8s  %s\n" "OWNER" "%CPU" "PID" "COMMAND"
+top -bc -w 512 -o %CPU -n 2 -d 1 \
+  | awk '/^top - /{it++} it==2' \
+  | awk 'h{print} /^[[:space:]]*PID[[:space:]]+USER/{h=1}' \
+  | head -n "$N" \
+  | while read -r pid _ _ _ _ _ _ _ cpu _ _ cmd; do
+      printf "%-26s %6s %8s  %s\n" "$(owner "$pid")" "$cpu" "$pid" "$cmd"
+    done
+
+# ----------------------------- top by I/O -----------------------------
+echo
+echo "=================== TOP $N BY DISK I/O  (kB/s) ==================="
 if command -v iotop >/dev/null 2>&1; then
-  # -o = only procs doing I/O, -P = per-process, -k = kB/s (sortable), -qqq = no headers.
-  # Sort by write rate (col 5); change -k5 to -k4 to rank by reads.
-  iotop -boPk -qqq -n 2 -d 1 | sort -rn -k5 | head -n "$N"
+  printf "%-26s %9s %9s  %s\n" "OWNER" "READ_K/s" "WRITE_K/s" "COMMAND"
+  # iotop cols: PID PRIO USER rd UNIT wr UNIT swapin UNIT io UNIT CMD... ($4=rd,$6=wr,$12+=cmd)
+  iotop -boPk -qqq -n 2 -d 1 \
+    | awk '{c=""; for(i=12;i<=NF;i++) c=c (i>12?" ":"") $i; print $1"\t"$4"\t"$6"\t"c}' \
+    | sort -t$'\t' -k3 -rn | head -n "$N" \
+    | while IFS=$'\t' read -r pid rd wr cmd; do
+        printf "%-26s %9s %9s  %s\n" "$(owner "$pid")" "$rd" "$wr" "$cmd"
+      done
 elif command -v pidstat >/dev/null 2>&1; then
-  # kB_rd/s=col4, kB_wr/s=col5; -l appends the full command line.
-  pidstat -dl 1 1 | awk 'NR>3 && $0 !~ /Average:/ && NF' | sort -rn -k5 | head -n "$N"
+  printf "%-26s %9s %9s  %s\n" "OWNER" "kB_rd/s" "kB_wr/s" "COMMAND"
+  pidstat -dl 1 1 | awk 'NR>3 && $0 !~ /Average:/ && NF' | sort -rn -k5 | head -n "$N" \
+    | while read -r _ _ pid rd wr _ _ cmd; do
+        printf "%-26s %9s %9s  %s\n" "$(owner "$pid")" "$rd" "$wr" "$cmd"
+      done
 else
-  echo "(no per-process I/O tool found — install one: apt install iotop sysstat)"
+  echo "(install iotop or sysstat for per-process I/O: apt install iotop sysstat)"
+fi
+
+# ----------------------------- --by-env rollup -----------------------------
+if [ "$BY_ENV" = 1 ] && [ -d /sys/fs/cgroup ]; then
+  echo
+  echo "=================== CORES BY ENV/CONTAINER  (2s delta) ==================="
+  cd /sys/fs/cgroup || exit
+  # Only meaningful units (not nested parent aggregates): each LXC as a whole,
+  # each host docker container, each VM scope. LXC-internal containers roll up
+  # into their lxc:N total.
+  mapfile -t CGS < <(
+    ls -d lxc/[0-9]*/cpu.stat 2>/dev/null
+    ls -d qemu.slice/*.scope/cpu.stat 2>/dev/null
+    ls -d system.slice/docker-*.scope/cpu.stat 2>/dev/null
+  )
+  declare -A U1
+  for f in "${CGS[@]}"; do U1["$f"]=$(awk '/^usage_usec/{print $2}' "$f" 2>/dev/null); done
+  sleep 2
+  for f in "${CGS[@]}"; do
+    u2=$(awk '/^usage_usec/{print $2}' "$f" 2>/dev/null); [ -z "$u2" ] && continue
+    d=$(( u2 - ${U1[$f]:-$u2} )); [ "$d" -gt 0 ] || continue
+    case "$f" in
+      lxc/*)                 lbl="lxc:$(printf '%s' "$f" | grep -oE 'lxc/[0-9]+' | grep -oE '[0-9]+$')" ;;
+      qemu.slice/*)          lbl="vm:$(printf '%s' "$f" | grep -oE '[0-9]+\.scope' | grep -oE '[0-9]+')" ;;
+      system.slice/docker-*) did=$(printf '%s' "$f" | grep -oE 'docker-[0-9a-f]{12}' | sed 's/docker-//'); lbl="${NAME[$did]:-docker:$did}" ;;
+      *)                     lbl="$f" ;;
+    esac
+    printf '%d\t%s\n' "$d" "$lbl"
+  done | sort -rn | head -n "$N" | awk -F'\t' '{printf "%6.2f cores  %s\n", $1/2000000, $2}'
+fi
+
+# ----------------------------- --mem section -----------------------------
+if [ "$MEM" = 1 ]; then
+  echo
+  echo "=================== MEMORY ==================="
+  free -h | awk 'NR<=2'
+  echo "PSI mem some/avg10: $(psi memory)%"
+  [ -r /proc/spl/kstat/zfs/arcstats ] && \
+    awk '/^size /{printf "ZFS ARC: %.1f GiB (counts as used, but reclaimable)\n",$3/1073741824}' /proc/spl/kstat/zfs/arcstats
+  echo "-- top $N by RSS --"
+  printf "%-26s %9s  %s\n" "OWNER" "RSS_MB" "COMMAND"
+  ps -eo pid=,rss=,args= --sort=-rss | head -n "$N" | while read -r pid rss cmd; do
+    printf "%-26s %9s  %s\n" "$(owner "$pid")" "$((rss/1024))" "$cmd"
+  done
 fi
