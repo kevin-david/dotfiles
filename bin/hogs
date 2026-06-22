@@ -1,0 +1,37 @@
+#!/bin/bash
+#
+# hogs [N]
+#
+# Show the top N tasks by CPU and by disk I/O, with full command-line args.
+# Built for diagnosing a hammered Linux box (high load / lag).
+#
+# Notes:
+#   - `ps --sort=-%cpu` is misleading: its %CPU is a *lifetime average*, so a
+#     long-running process looks busy even when idle now. This takes a live
+#     sample instead (two top readings, keeps the second).
+#   - Run as root for full visibility; I/O needs root + kernel I/O accounting.
+#   - On the Proxmox host this lists every container/VM process in one flat list.
+#
+# Usage: hogs           # top 20
+#        hogs 30        # top 30
+#        sudo hogs      # full I/O + all users
+
+N="${1:-20}"
+
+echo "===== TOP $N BY CPU  (1s live sample, full args) ====="
+# Two samples 1s apart; keep the 2nd (the real instantaneous one). ~7 header
+# lines precede the process rows, so show N+7.
+top -bc -w 512 -o %CPU -n 2 -d 1 | awk '/^top - /{it++} it==2' | head -n "$((N + 7))"
+
+echo
+echo "===== TOP $N BY DISK I/O  (full args) ====="
+if command -v iotop >/dev/null 2>&1; then
+  # -o = only procs doing I/O, -P = per-process, -k = kB/s (sortable), -qqq = no headers.
+  # Sort by write rate (col 5); change -k5 to -k4 to rank by reads.
+  iotop -boPk -qqq -n 2 -d 1 | sort -rn -k5 | head -n "$N"
+elif command -v pidstat >/dev/null 2>&1; then
+  # kB_rd/s=col4, kB_wr/s=col5; -l appends the full command line.
+  pidstat -dl 1 1 | awk 'NR>3 && $0 !~ /Average:/ && NF' | sort -rn -k5 | head -n "$N"
+else
+  echo "(no per-process I/O tool found — install one: apt install iotop sysstat)"
+fi

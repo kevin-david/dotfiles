@@ -519,6 +519,13 @@ def main() -> None:
         "someone else's PR without touching it.",
     )
     ap.add_argument("--keep-worktree", action="store_true")
+    ap.add_argument(
+        "--prompt",
+        help="path to a review-prompt template to use instead of the default "
+        "review-prompt.md (must keep the same {{...}} tokens + JSON output contract). "
+        "Use to review a non-code change (e.g. a design/implementation-plan doc) with "
+        "a prompt tailored to it.",
+    )
     ap.add_argument("--claude-model", help="override model for Claude Code")
     ap.add_argument("--codex-model", help="override model for Codex")
     ap.add_argument("--antigravity-model", help="override model for Antigravity")
@@ -545,8 +552,9 @@ def main() -> None:
     for tool in ("gh", "git"):
         if not shutil.which(tool):
             die(f"{tool} not found")
-    if not PROMPT_TEMPLATE.exists():
-        die(f"prompt template missing: {PROMPT_TEMPLATE}")
+    prompt_path = Path(args.prompt).expanduser() if args.prompt else PROMPT_TEMPLATE
+    if not prompt_path.exists():
+        die(f"prompt template missing: {prompt_path}")
 
     pr = args.pr
     meta = json.loads(run_ok(["gh", "pr", "view", pr, "--json", "state,isDraft,baseRefName,headRefOid,body,title"]))
@@ -638,7 +646,7 @@ def main() -> None:
     if mode == "post":
         print(f">>> will POST inline comments to PR #{pr}")
 
-    template = PROMPT_TEMPLATE.read_text()
+    template = prompt_path.read_text()
     out = Path(tempfile.mkdtemp(prefix=f"pr-{pr}-out."))
     wt = tempfile.mkdtemp(prefix=f"pr-{pr}-review.")
 
