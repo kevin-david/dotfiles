@@ -21,6 +21,14 @@
 #
 # Usage:  hogs · hogs 30 · sudo hogs --by-env · sudo hogs --mem
 
+# Re-exec as root via our absolute path. `sudo hogs` fails because sudo's
+# secure_path doesn't include ~/.dotfiles/bin — but `hogs` is on the user's
+# PATH, so let it find us, then elevate itself. (Skip if already root, or if
+# there's no sudo / no tty to prompt on.)
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && [ -t 0 ]; then
+  exec sudo "$0" "$@"
+fi
+
 N=20; BY_ENV=0; MEM=0
 for a in "$@"; do
   case "$a" in
