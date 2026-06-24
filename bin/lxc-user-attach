@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Attach directly to a Proxmox LXC as a guest user without SSH or su.
+
+set -euo pipefail
+
+CT_PATH="${CT_PATH:-/run/current-system/sw/bin:/run/wrappers/bin:/usr/bin:/bin}"
+LXC_PATH="${LXC_PATH:-/var/lib/lxc}"
+DEFAULT_USER="${ATTACH_USER:-${SUDO_USER:-${USER:-root}}}"
+
+if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+  exec sudo --preserve-env=ATTACH_USER,CT_PATH,LXC_PATH -- "$0" "$@"
+fi
+
+usage(){
+  cat <<EOF
+Usage:
+  lxc-user-attach HOSTNAME_OR_CTID [USER]
+  lxc-user-attach HOSTNAME_OR_CTID [USER] -- COMMAND [ARG...]
+
+Environment overrides:
+  ATTACH_USER=$DEFAULT_USER
+  CT_PATH=$CT_PATH
+  LXC_PATH=$LXC_PATH
+
+Examples:
+  lxc-user-attach devbox-01
+  lxc-user-attach 102 kevin
+  lxc-user-attach 102 kevin -- /run/current-system/sw/bin/id
+EOF
+}
+
+die(){
+  echo "[error] $*" >&2
+  exit 1
+}
+
+ct_hostname(){
+  pct config "$1" 2>/dev/null | awk -F': ' '$1=="hostname"{print $2; exit}'
+}
+
+ctid_for_hostname(){
+  local name="$1" id host match="" count=0
+
+  while read -r id; do
+    [ -n "$id" ] || continue
+    host="$(ct_hostname "$id")"
+    if [ "${host,,}" = "${name,,}" ]; then
+      match="$id"
+      count=$((count + 1))
+    fi
+  done < <(pct list 2>/dev/null | awk 'NR>1 {print $1}')
+
+  if [ "$count" -gt 1 ]; then
+    die "hostname $name matches multiple CTs"
+  fi
+  [ "$count" -eq 0 ] || printf '%s\n' "$match"
+}
+
+target="${1:-}"
+if [ -z "$target" ] || [ "$target" = "-h" ] || [ "$target" = "--help" ]; then
+  usage
+  exit 0
+fi
+shift
+
+user="$DEFAULT_USER"
+if [ $# -gt 0 ] && [ "$1" != "--" ]; then
+  user="$1"
+  shift
+fi
+
+command_args=()
+if [ $# -gt 0 ]; then
+  if [ "$1" != "--" ]; then
+    die "unknown argument: $1"
+  fi
+  shift
+  command_args=("$@")
+fi
+
+if [[ "$target" =~ ^[0-9]+$ ]]; then
+  ctid="$target"
+else
+  ctid="$(ctid_for_hostname "$target")"
+  [ -n "$ctid" ] || die "no CT found with hostname: $target"
+fi
+
+pct status "$ctid" &>/dev/null || die "CT does not exist: $ctid"
+status="$(pct status "$ctid" | awk '{print $2}')"
+if [ "$status" != running ]; then
+  die "CT $ctid is $status; start it first"
+fi
+
+if ! passwd_entry="$(pct exec "$ctid" -- env PATH="$CT_PATH" getent passwd "$user")"; then
+  die "user $user does not exist in CT $ctid"
+fi
+[ -n "$passwd_entry" ] || die "user $user does not exist in CT $ctid"
+
+IFS=: read -r user_name _user_pass ct_uid ct_gid _gecos home_dir shell_path _rest <<< "$passwd_entry"
+[ -n "$ct_uid" ] || die "could not read uid for $user in CT $ctid"
+[ -n "$ct_gid" ] || die "could not read gid for $user in CT $ctid"
+[ -n "$home_dir" ] || die "could not read home for $user in CT $ctid"
+if [ -z "$shell_path" ]; then
+  shell_path="/bin/sh"
+fi
+
+if [ "${#command_args[@]}" -eq 0 ]; then
+  command_args=("$shell_path" -l)
+fi
+
+exec lxc-attach -P "$LXC_PATH" -n "$ctid" --clear-env \
+  --uid "$ct_uid" \
+  --gid "$ct_gid" \
+  --set-var PATH="$CT_PATH" \
+  --set-var USER="$user_name" \
+  --set-var LOGNAME="$user_name" \
+  --set-var HOME="$home_dir" \
+  --set-var SHELL="$shell_path" \
+  -- "${command_args[@]}"
