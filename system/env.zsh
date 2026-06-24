@@ -12,5 +12,6 @@ fi
 # Gated on TERM so we don't assert truecolor on a dumb console (e.g. PVE serial).
 case $TERM in
   *-ghostty|xterm-256color|tmux-256color|screen-256color|alacritty|*-direct)
-    export COLORTERM="${COLORTERM:-truecolor}" ;;
+    #temp disable - code(r) performance issues
+    #export COLORTERM="${COLORTERM:-truecolor}" ;;
 esac
