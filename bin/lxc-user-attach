@@ -85,8 +85,10 @@ else
   [ -n "$ctid" ] || die "no CT found with hostname: $target"
 fi
 
-pct status "$ctid" &>/dev/null || die "CT does not exist: $ctid"
-status="$(pct status "$ctid" | awk '{print $2}')"
+if ! status_line="$(pct status "$ctid" 2>/dev/null)"; then
+  die "CT does not exist: $ctid"
+fi
+status="$(printf '%s\n' "$status_line" | awk '{print $2}')"
 if [ "$status" != running ]; then
   die "CT $ctid is $status; start it first"
 fi
