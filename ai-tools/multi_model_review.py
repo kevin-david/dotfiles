@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Fan a single PR out to multiple review harnesses (Claude Code, Codex, Antigravity).
 
-Each harness runs headless against the same neutral prompt (review-prompt.md) and
-emits structured findings; this runner posts them as INLINE review comments
-anchored to the changed lines, so each finding becomes its own resolvable
-thread on the PR. Cross-cutting findings are anchored once, at the reviewer's
-chosen best location.
+Each harness runs headless against the same neutral prompt rendered from the
+shared review-rubric skill and emits structured findings; this runner posts them
+as INLINE review comments anchored to the changed lines, so each finding becomes
+its own resolvable thread on the PR. Cross-cutting findings are anchored once, at
+the reviewer's chosen best location.
 
 Cross-harness by construction: orchestration lives here, not inside any one
 CLI's skill/workflow system, so adding a harness is one entry in LANES.
@@ -36,6 +36,8 @@ from io import TextIOWrapper
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Literal, NamedTuple, NewType, NoReturn, TypedDict, cast
+
+import render_review_prompt
 
 # Brands for the two bare-str ids that get passed positionally and would
 # silently swap: a git commit id and a git ref name read the same to the type
@@ -101,7 +103,7 @@ class ReviewCtx:
     reports: list[str] = field(default_factory=list)
 
 
-PROMPT_TEMPLATE = Path(__file__).resolve().parent / "review-prompt.md"
+DEFAULT_REVIEW_KIND = "code"
 SENTINEL_OPEN = "<<<REVIEW_JSON"
 SENTINEL_CLOSE = "REVIEW_JSON>>>"
 
@@ -174,6 +176,27 @@ def render_prompt(template: str, *, base: Sha, slug: str, head: Sha, pr: str, bo
     # PR_BODY last: its text is author-controlled and may itself contain a
     # `{{...}}` token, so substitute it after every real token is resolved.
     return template.replace("{{PR_BODY}}", body.strip() or "(no description)")
+
+
+def load_prompt_template(prompt_path: Path | None, review_kind: str) -> str:
+    if prompt_path is not None:
+        if not prompt_path.exists():
+            die(f"prompt template missing: {prompt_path}")
+        return prompt_path.read_text()
+    try:
+        return render_review_prompt.render_prompt(review_kind)
+    except ValueError as e:
+        die(str(e))
+    except FileNotFoundError as e:
+        # review-rubric skill not installed (e.g. a fresh clone): fall back to
+        # the in-repo snapshot, which the tests keep byte-for-byte in sync with
+        # the rendered prompt.
+        fallback = Path(__file__).resolve().parent / (
+            "review-prompt.md" if review_kind == "code" else "review-prompt-plan.md"
+        )
+        if fallback.exists():
+            return fallback.read_text()
+        die(str(e))
 
 
 # --- lanes -------------------------------------------------------------------
@@ -520,11 +543,15 @@ def main() -> None:
     )
     ap.add_argument("--keep-worktree", action="store_true")
     ap.add_argument(
+        "--review-kind",
+        choices=list(render_review_prompt.REVIEW_KINDS),
+        default=DEFAULT_REVIEW_KIND,
+        help="built-in review prompt to render from the shared review-rubric skill (default: code)",
+    )
+    ap.add_argument(
         "--prompt",
-        help="path to a review-prompt template to use instead of the default "
-        "review-prompt.md (must keep the same {{...}} tokens + JSON output contract). "
-        "Use to review a non-code change (e.g. a design/implementation-plan doc) with "
-        "a prompt tailored to it.",
+        help="path to a custom prompt template to use instead of --review-kind "
+        "(must keep the same {{...}} tokens + JSON output contract)",
     )
     ap.add_argument("--claude-model", help="override model for Claude Code")
     ap.add_argument("--codex-model", help="override model for Codex")
@@ -552,9 +579,7 @@ def main() -> None:
     for tool in ("gh", "git"):
         if not shutil.which(tool):
             die(f"{tool} not found")
-    prompt_path = Path(args.prompt).expanduser() if args.prompt else PROMPT_TEMPLATE
-    if not prompt_path.exists():
-        die(f"prompt template missing: {prompt_path}")
+    prompt_path = Path(args.prompt).expanduser() if args.prompt else None
 
     pr = args.pr
     meta = json.loads(run_ok(["gh", "pr", "view", pr, "--json", "state,isDraft,baseRefName,headRefOid,body,title"]))
@@ -646,7 +671,7 @@ def main() -> None:
     if mode == "post":
         print(f">>> will POST inline comments to PR #{pr}")
 
-    template = prompt_path.read_text()
+    template = load_prompt_template(prompt_path, args.review_kind)
     out = Path(tempfile.mkdtemp(prefix=f"pr-{pr}-out."))
     wt = tempfile.mkdtemp(prefix=f"pr-{pr}-review.")
 

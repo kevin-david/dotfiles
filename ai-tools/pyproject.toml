@@ -42,4 +42,4 @@ python-platform = "linux"
 all = "error"
 
 [tool.ty.src]
-include = ["multi_model_review.py"]
+include = ["multi_model_review.py", "render_review_prompt.py"]
