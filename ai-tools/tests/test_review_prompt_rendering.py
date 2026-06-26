@@ -14,6 +14,14 @@ render_review_prompt = importlib.import_module("render_review_prompt")
 
 
 class ReviewPromptRenderingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # These tests render from the external review-rubric skill. On a fresh
+        # clone without the skill installed, skip rather than error opaquely.
+        try:
+            render_review_prompt.references_dir()
+        except FileNotFoundError:
+            self.skipTest("review-rubric skill not installed locally")
+
     def test_code_and_plan_prompts_include_shared_rubric(self) -> None:
         code_prompt = render_review_prompt.render_prompt("code")
         plan_prompt = render_review_prompt.render_prompt("plan")

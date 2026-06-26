@@ -185,7 +185,17 @@ def load_prompt_template(prompt_path: Path | None, review_kind: str) -> str:
         return prompt_path.read_text()
     try:
         return render_review_prompt.render_prompt(review_kind)
-    except (FileNotFoundError, ValueError) as e:
+    except ValueError as e:
+        die(str(e))
+    except FileNotFoundError as e:
+        # review-rubric skill not installed (e.g. a fresh clone): fall back to
+        # the in-repo snapshot, which the tests keep byte-for-byte in sync with
+        # the rendered prompt.
+        fallback = Path(__file__).resolve().parent / (
+            "review-prompt.md" if review_kind == "code" else "review-prompt-plan.md"
+        )
+        if fallback.exists():
+            return fallback.read_text()
         die(str(e))
 
 
@@ -534,7 +544,7 @@ def main() -> None:
     ap.add_argument("--keep-worktree", action="store_true")
     ap.add_argument(
         "--review-kind",
-        choices=["code", "plan"],
+        choices=list(render_review_prompt.REVIEW_KINDS),
         default=DEFAULT_REVIEW_KIND,
         help="built-in review prompt to render from the shared review-rubric skill (default: code)",
     )
