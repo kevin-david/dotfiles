@@ -25,6 +25,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -119,6 +120,7 @@ class ReviewCtx:
     head: Sha
     diff_lines: dict[str, set[int]]
     pr_title: str
+    worktree: Path
     repo_files: set[str] = field(default_factory=set)
     review_overviews: list[tuple[str, LaneReview]] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
@@ -155,6 +157,11 @@ LANE_EFFORTS = {
 
 
 SEVERITY_RANK = {"Critical": 0, "Important": 1, "Suggestion": 2}
+# Minimum backticked references in a lane's `method` section that must resolve
+# to a real file or symbol in the review worktree. Proof-of-work: a review that
+# actually traced code names real paths and functions; boilerplate ("read the
+# diff, checked for bugs") doesn't, and its no-findings verdict is not evidence.
+HOLLOW_METHOD_MIN_REFS = 2
 # Every section the prompt forces a reviewer to emit. A block missing any of
 # these didn't do the work — the lane is flagged incomplete and its verdict
 # discounted, rather than silently trusted as a clean pass.
@@ -467,6 +474,21 @@ def diff_commentable_lines(base: Sha, head: Sha) -> dict[str, set[int]]:
     return files
 
 
+def count_real_refs(method: str, worktree: Path) -> int:
+    """Distinct backticked references in a method section that resolve to a real
+    file path or a symbol greppable in the review worktree."""
+    hits = 0
+    for ref in {r.strip() for r in re.findall(r"`([^`\n]{1,200})`", method)}:
+        base = ref.split(":", 1)[0]
+        if base and not base.startswith("/") and (worktree / base).exists():
+            hits += 1
+            continue
+        name = re.sub(r"\(.*\)$", "", ref).rsplit(".", 1)[-1].strip()
+        if re.fullmatch(r"\w+", name) and run(["git", "-C", str(worktree), "grep", "-q", "-F", name]).returncode == 0:
+            hits += 1
+    return hits
+
+
 def post_inline(slug: str, pr: str, head: Sha, f: Finding, body: str, line: int) -> CompletedProcess[str]:
     """One review comment per finding => its own resolvable thread."""
     cmd = [
@@ -520,13 +542,18 @@ def process_lane(lane: str, res: LaneResult, ctx: ReviewCtx, out: Path) -> None:
     # read with suspicion (a "no findings / mergeable" from an incomplete pass is
     # not evidence). We still render what it did return.
     missing = [k for k in REQUIRED_KEYS if k not in data]
+    incomplete_reasons: list[str] = []
     if missing:
-        print(f"  [{lane}] INCOMPLETE — missing required section(s): {', '.join(missing)}", file=sys.stderr)
-        ctx.incomplete.append(f"{lane} (missing: {', '.join(missing)})")
+        incomplete_reasons.append(f"missing section(s): {', '.join(missing)}")
+    elif (refs := count_real_refs(data.get("method", ""), ctx.worktree)) < HOLLOW_METHOD_MIN_REFS:
+        incomplete_reasons.append(f"hollow method: {refs} verifiable reference(s)")
     contract_issues = review_contract_issues(data, ctx.repo_files)
     if contract_issues:
-        print(f"  [{lane}] INCOMPLETE — contract: {'; '.join(contract_issues)}", file=sys.stderr)
-        ctx.incomplete.append(f"{lane} (contract: {'; '.join(contract_issues)})")
+        incomplete_reasons.append(f"contract: {'; '.join(contract_issues)}")
+    for reason in incomplete_reasons:
+        print(f"  [{lane}] INCOMPLETE — {reason}", file=sys.stderr)
+        ctx.incomplete.append(f"{lane} ({reason})")
+    incomplete_reason = "; ".join(incomplete_reasons)
 
     findings = [f for f in data.get("findings", []) if f.get("confidence", 100) >= THRESHOLD]
     findings.sort(key=lambda f: SEVERITY_RANK.get(f.get("severity", "Suggestion"), 3))
@@ -572,10 +599,9 @@ def process_lane(lane: str, res: LaneResult, ctx: ReviewCtx, out: Path) -> None:
     # routing for a human, not as a verdict on this PR.
     head_line = f"**{tag}** — review summary" if ctx.mode == "post" else f"## {tag}"
     parts = [head_line, ""]
-    if missing:
+    if incomplete_reason:
         parts += [
-            f"> ⚠ **Incomplete review** — missing section(s): {', '.join(missing)}. "
-            "Treat the verdict below with suspicion.",
+            f"> ⚠ **Incomplete review** — {incomplete_reason}. Treat the verdict below with suspicion.",
             "",
         ]
     parts += [f"**Assessment:** {data.get('assessment', 'n/a')}", ""]
@@ -916,6 +942,7 @@ def main() -> None:
         diff_lines=diff_lines,
         pr_title=meta.get("title", ""),
         repo_files=repo_files,
+        worktree=Path(wt),
     )
     try:
         prompts = {
