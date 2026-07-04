@@ -6,9 +6,10 @@ set -euo pipefail
 CT_PATH="${CT_PATH:-/run/current-system/sw/bin:/run/wrappers/bin:/usr/bin:/bin}"
 LXC_PATH="${LXC_PATH:-/var/lib/lxc}"
 DEFAULT_USER="${ATTACH_USER:-${SUDO_USER:-${USER:-root}}}"
+START_POLICY="${LXC_USER_ATTACH_START:-auto}"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-  exec sudo --preserve-env=ATTACH_USER,CT_PATH,LXC_PATH -- "$0" "$@"
+  exec sudo --preserve-env=ATTACH_USER,CT_PATH,LXC_PATH,LXC_USER_ATTACH_START -- "$0" "$@"
 fi
 
 usage(){
@@ -21,6 +22,7 @@ Environment overrides:
   ATTACH_USER=$DEFAULT_USER
   CT_PATH=$CT_PATH
   LXC_PATH=$LXC_PATH
+  LXC_USER_ATTACH_START=auto|ask|always|never
 
 Examples:
   lxc-user-attach devbox-01
@@ -54,6 +56,41 @@ ctid_for_hostname(){
     die "hostname $name matches multiple CTs"
   fi
   [ "$count" -eq 0 ] || printf '%s\n' "$match"
+}
+
+start_stopped_ct(){
+  local ctid="$1" status="$2" answer
+
+  case "${START_POLICY,,}" in
+    always|yes|true|1)
+      pct start "$ctid" || die "failed to start CT $ctid"
+      return
+      ;;
+    never|no|false|0)
+      die "CT $ctid is $status; start it first"
+      ;;
+    auto|"")
+      if [ ! -t 0 ]; then
+        die "CT $ctid is $status; start it first"
+      fi
+      ;;
+    ask)
+      ;;
+    *)
+      die "invalid LXC_USER_ATTACH_START=$START_POLICY (expected auto, ask, always, or never)"
+      ;;
+  esac
+
+  printf 'CT %s is %s. Start it now? [Y/n] ' "$ctid" "$status" >&2
+  IFS= read -r answer || answer=
+  case "${answer,,}" in
+    n|no)
+      die "CT $ctid is $status"
+      ;;
+    *)
+      pct start "$ctid" || die "failed to start CT $ctid"
+      ;;
+  esac
 }
 
 target="${1:-}"
@@ -90,7 +127,12 @@ if ! status_line="$(pct status "$ctid" 2>/dev/null)"; then
 fi
 status="$(printf '%s\n' "$status_line" | awk '{print $2}')"
 if [ "$status" != running ]; then
-  die "CT $ctid is $status; start it first"
+  start_stopped_ct "$ctid" "$status"
+  if ! status_line="$(pct status "$ctid" 2>/dev/null)"; then
+    die "CT disappeared after start: $ctid"
+  fi
+  status="$(printf '%s\n' "$status_line" | awk '{print $2}')"
+  [ "$status" = running ] || die "CT $ctid is $status after start"
 fi
 
 if ! passwd_entry="$(pct exec "$ctid" -- env PATH="$CT_PATH" getent passwd "$user")"; then
