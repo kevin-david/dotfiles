@@ -72,6 +72,24 @@ possible.
 - Form findings independently. Do not read existing PR review comments or
   threads; they anchor the review on someone else's framing.
 
+## Required review evidence
+
+Before judging the diff, externalize the model you used to review it:
+
+- State the behavioral delta in caller or user terms, not as a file list.
+- Record inspected paths, symbols, and the conclusion each inspection supported.
+  Name at least two verifiable file/symbol targets.
+- State coverage gaps honestly. An empty list means you found no material gap,
+  not that the field may be skipped.
+- List the interacting components and each role. When the changed behavior spans
+  at least three components, include a compact Mermaid `flowchart`; otherwise
+  emit an empty Mermaid string. The diagram is review evidence, not decoration.
+- Select deeper lenses from the code: stateful paths require ordering and
+  ownership checks; persistence requires transaction and migration checks;
+  security requires trust-boundary checks; numerical code requires units and
+  precision checks; UI requires lifecycle checks; external integrations require
+  schema, retry, and failure checks. Do not force irrelevant lenses.
+
 ## Honor the repo's conventions
 
 Read the target repo's instruction files, such as `AGENTS.md`, `CLAUDE.md`,
@@ -139,6 +157,19 @@ responsible for posting or reporting.
 <<<REVIEW_JSON
 {
   "eligible": true,
+  "behavioral_delta": "What changes for a caller, user, operator, or downstream consumer.",
+  "inspected": [
+    {
+      "path": "src/path/to/file.ext",
+      "symbols": ["function_or_type", "caller_or_consumer"],
+      "conclusion": "What this inspection proved or disproved."
+    }
+  ],
+  "coverage_gaps": ["Anything material you could not verify; empty when none."],
+  "change_map": {
+    "components": [{"name": "Component", "role": "Role in the changed behavior"}],
+    "mermaid": "flowchart LR\n  A --> B"
+  },
   "method": "How you actually reviewed this. Name the specific paths, functions, queries, schemas, callers, consumers, commands, and plan steps you traced. A generic 'I read the diff and checked for bugs' is a failed section.",
   "assessment": "one line: mergeable | mergeable-with-fixes | needs-rework, and why",
   "strengths": ["what this change or plan gets right", "..."],
@@ -160,9 +191,13 @@ REVIEW_JSON>>>
 
 Rules for the block:
 
-- Top-level keys are fixed and all required: `eligible`, `method`, `assessment`,
-  `strengths`, `description_notes`, `findings`.
+- Top-level keys are fixed and all required: `eligible`, `behavioral_delta`,
+  `inspected`, `coverage_gaps`, `change_map`, `method`, `assessment`, `strengths`,
+  `description_notes`, `findings`.
 - Emit empty arrays explicitly when a section has nothing to say.
+- `inspected` must name at least two real file/symbol targets and conclusions.
+- `change_map.mermaid` is required when `change_map.components` has at least
+  three entries; emit an empty string for a smaller change.
 - `method` is never empty; it is proof of work.
 - Valid JSON only: no trailing commas, no comments.
 - `severity` must be exactly `Critical`, `Important`, or `Suggestion`.

@@ -152,12 +152,16 @@ if [ "${#command_args[@]}" -eq 0 ]; then
   command_args=("$shell_path" -l)
 fi
 
+# NOTE: lxc-attach --uid/--gid does a bare setuid/setgid and never calls
+# initgroups(), so supplementary groups (e.g. docker) are dropped and the
+# user lands with only their primary group. Attach as root and switch
+# identity inside the CT with setpriv --init-groups, which loads the full
+# supplementary group list from the guest's /etc/group.
 exec lxc-attach -P "$LXC_PATH" -n "$ctid" --clear-env \
-  --uid "$ct_uid" \
-  --gid "$ct_gid" \
   --set-var PATH="$CT_PATH" \
   --set-var USER="$user_name" \
   --set-var LOGNAME="$user_name" \
   --set-var HOME="$home_dir" \
   --set-var SHELL="$shell_path" \
-  -- "${command_args[@]}"
+  -- setpriv --reuid "$ct_uid" --regid "$ct_gid" --init-groups \
+     "${command_args[@]}"
