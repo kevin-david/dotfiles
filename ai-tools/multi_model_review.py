@@ -305,18 +305,24 @@ LANE_BINARIES = {
 
 # --- findings ----------------------------------------------------------------
 def extract_findings(raw: str) -> LaneReview | None:
-    """Pull the JSON object between the sentinels. None if absent/invalid."""
-    i = raw.find(SENTINEL_OPEN)
-    if i == -1:
-        return None
-    i = raw.find("\n", i)
-    j = raw.find(SENTINEL_CLOSE, i)
-    if i == -1 or j == -1:
-        return None
-    try:
-        return json.loads(raw[i:j])
-    except json.JSONDecodeError:
-        return None
+    """Return the last valid JSON object between review sentinels."""
+    reviews: list[LaneReview] = []
+    start = 0
+    while True:
+        sentinel = raw.find(SENTINEL_OPEN, start)
+        if sentinel == -1:
+            break
+        body_start = raw.find("\n", sentinel)
+        body_end = raw.find(SENTINEL_CLOSE, body_start)
+        if body_start != -1 and body_end != -1:
+            try:
+                reviews.append(json.loads(raw[body_start:body_end]))
+            except json.JSONDecodeError:
+                pass
+        # Advance only past this opening sentinel so a complete block nested
+        # after an abandoned attempt is still considered independently.
+        start = sentinel + len(SENTINEL_OPEN)
+    return reviews[-1] if reviews else None
 
 
 def review_contract_issues(data: Mapping[str, object], repo_files: set[str]) -> list[str]:

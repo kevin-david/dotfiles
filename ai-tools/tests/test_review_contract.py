@@ -53,6 +53,19 @@ class ReviewContractTest(unittest.TestCase):
             self.assertIsNotNone(sample)
             self.assertFalse(set(multi_model_review.REQUIRED_KEYS) - set(sample or {}))
 
+    def test_extract_findings_uses_complete_retry_after_abandoned_block(self) -> None:
+        raw = """<<<REVIEW_JSON
+{"assessment": "incomplete
+retrying
+<<<REVIEW_JSON
+{"assessment": "complete", "findings": []}
+REVIEW_JSON>>>
+"""
+
+        review = multi_model_review.extract_findings(raw)
+
+        self.assertEqual(review, {"assessment": "complete", "findings": []})
+
     def test_three_component_map_requires_flowchart(self) -> None:
         review = self.valid_review()
         review["change_map"]["mermaid"] = ""
