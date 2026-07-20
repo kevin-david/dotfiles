@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import json
 import os
 import re
@@ -322,10 +323,8 @@ def extract_findings(raw: str) -> LaneReview | None:
         body_start = raw.find("\n", sentinel)
         body_end = raw.find(SENTINEL_CLOSE, body_start)
         if body_start != -1 and body_end != -1:
-            try:
+            with contextlib.suppress(json.JSONDecodeError):
                 reviews.append(json.loads(raw[body_start:body_end]))
-            except json.JSONDecodeError:
-                pass
         # Advance only past this opening sentinel so a complete block nested
         # after an abandoned attempt is still considered independently.
         start = sentinel + len(SENTINEL_OPEN)
