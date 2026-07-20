@@ -44,6 +44,7 @@ cask "antigravity"              # Google Antigravity CLI (agy)
 cask "autodesk-fusion"
 cask "bambu-studio"
 cask "beeper"                   # Unified chat client (Matrix, etc.)
+cask "bettercapture"            # Screen recorder
 cask "bitwarden"
 cask "caffeine"                 # Keep Mac awake
 cask "cameracontroller"         # Control USB cameras, fix C920s autofocus
@@ -62,7 +63,6 @@ cask "granola"
 cask "handbrake-app"
 cask "home-assistant"           # Companion app
 cask "iina"                     # macOS-native video player (mpv-based)
-cask "kap"                      # Open-source screen recorder
 cask "karabiner-elements"       # Keyboard remapping tool
 cask "keka"                     # Archive compressor and extractor
 cask "keymapp"                  # ZSA keyboard configurator
