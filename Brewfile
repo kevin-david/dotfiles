@@ -55,6 +55,7 @@ cask "cursor"
 cask "diffusionbee"             # Local Stable Diffusion GUI
 cask "docker-desktop"
 cask "eqmac"                    # System-wide audio equalizer
+cask "finicky"                  # Route links to different browsers
 cask "force-paste"              # Enable paste in restricted fields
 cask "ghostty"
 cask "gimp"
