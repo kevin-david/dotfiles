@@ -18,7 +18,7 @@ multi_model_review = importlib.import_module("multi_model_review")
 class LaneConfigurationTest(unittest.TestCase):
     def test_default_reviewer_presets_keep_effort_with_its_harness(self) -> None:
         self.assertEqual(multi_model_review.LANE_MODELS["claude"], "fable")
-        self.assertEqual(multi_model_review.CLAUDE_LIMIT_RETRY_MODEL, "opus")
+        self.assertEqual(multi_model_review.CLAUDE_FALLBACK_MODEL, "opus")
         self.assertEqual(multi_model_review.LANE_EFFORTS["claude"], "high")
         self.assertEqual(multi_model_review.LANE_MODELS["codex"], "gpt-5.6-sol")
         self.assertEqual(multi_model_review.LANE_EFFORTS["codex"], "high")
@@ -51,8 +51,8 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertIn('model_reasoning_effort="high"', codex_cmd)
         self.assertEqual(codex_cmd[codex_cmd.index("-m") + 1], "gpt-5.6-sol")
 
-    def test_claude_retries_a_fable_limit_response_with_opus(self) -> None:
-        limited = CompletedProcess(
+    def test_claude_retries_once_with_opus_when_primary_is_unavailable(self) -> None:
+        unavailable = CompletedProcess(
             args=[],
             returncode=0,
             stdout="You've reached your Fable 5 limit. /model to switch models.",
@@ -64,33 +64,79 @@ class LaneConfigurationTest(unittest.TestCase):
             out = Path(td)
             with (
                 patch.dict(multi_model_review.LANE_MODELS, {"claude": "fable"}),
-                patch.object(multi_model_review, "run", side_effect=[limited, reviewed]) as run,
+                patch.dict(multi_model_review.LANE_EFFECTIVE_MODELS, {"claude": "fable"}),
+                patch.object(multi_model_review, "run", side_effect=[unavailable, reviewed]) as run,
             ):
                 result = multi_model_review.lane_claude("prompt", td, out)
                 commands = [call.args[0] for call in run.call_args_list]
+                effective_tag = multi_model_review.tag_for("claude")
 
         self.assertEqual(result, multi_model_review.LaneResult("review", 0, ""))
         self.assertEqual(commands[0][commands[0].index("--model") + 1], "fable")
         self.assertEqual(commands[1][commands[1].index("--model") + 1], "opus")
+        self.assertEqual(effective_tag, "[Claude (opus / high)]")
 
-    def test_claude_limit_response_from_opus_fails_the_lane(self) -> None:
-        limited = CompletedProcess(
+    def test_claude_fails_without_postable_output_when_fallback_is_unavailable(self) -> None:
+        unavailable = CompletedProcess(
             args=[],
             returncode=0,
-            stdout="You have reached your Opus limit. /model to switch models.",
+            stdout="You've reached your model limit. /model to switch models.",
             stderr="",
         )
 
-        with (
-            tempfile.TemporaryDirectory() as td,
-            patch.dict(multi_model_review.LANE_MODELS, {"claude": "opus"}),
-            patch.object(multi_model_review, "run", return_value=limited),
-        ):
-            result = multi_model_review.lane_claude("prompt", td, Path(td))
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(
+                multi_model_review,
+                "run",
+                side_effect=(unavailable, unavailable),
+            ):
+                result = multi_model_review.lane_claude("prompt", td, Path(td))
 
         self.assertEqual(result.code, 1)
         self.assertEqual(result.out, "")
-        self.assertIn("Opus limit", result.err)
+        self.assertIn("model limit", result.err)
+
+    def test_claude_does_not_retry_an_unrelated_failure(self) -> None:
+        auth_failure = CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="authentication failed",
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(
+                multi_model_review,
+                "run",
+                return_value=auth_failure,
+            ) as run:
+                result = multi_model_review.lane_claude("prompt", td, Path(td))
+
+        self.assertEqual(result, multi_model_review.LaneResult("", 1, "authentication failed"))
+        self.assertEqual(run.call_count, 1)
+
+    def test_claude_does_not_retry_a_structured_review_that_mentions_a_limit(self) -> None:
+        review = CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(
+                "<<<REVIEW_JSON\n"
+                '{"assessment": "The API reached your configured limit."}\n'
+                "REVIEW_JSON>>>"
+            ),
+            stderr="",
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(
+                multi_model_review,
+                "run",
+                return_value=review,
+            ) as run:
+                result = multi_model_review.lane_claude("prompt", td, Path(td))
+
+        self.assertEqual(result.out, review.stdout)
+        self.assertEqual(run.call_count, 1)
 
     def test_antigravity_returns_only_grounded_structured_result(self) -> None:
         with tempfile.TemporaryDirectory() as td:

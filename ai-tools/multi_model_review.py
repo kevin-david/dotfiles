@@ -155,11 +155,12 @@ LANE_MODELS = {
     "codex": env("REVIEW_CODEX_MODEL", "gpt-5.6-sol"),
     "antigravity": env("REVIEW_ANTIGRAVITY_MODEL", "Gemini 3.1 Pro (High)"),
 }
+LANE_EFFECTIVE_MODELS = dict(LANE_MODELS)
+CLAUDE_FALLBACK_MODEL = env("REVIEW_CLAUDE_FALLBACK_MODEL", "opus")
 LANE_EFFORTS = {
     "claude": env("REVIEW_CLAUDE_EFFORT", "high"),
     "codex": env("REVIEW_CODEX_EFFORT", "high"),
 }
-CLAUDE_LIMIT_RETRY_MODEL = env("REVIEW_CLAUDE_LIMIT_RETRY_MODEL", "opus")
 
 
 SEVERITY_RANK = {"Critical": 0, "Important": 1, "Suggestion": 2}
@@ -268,7 +269,7 @@ def run_ok(cmd: list[str], **kw) -> str:
 
 def tag_for(lane: str) -> str:
     label = LANE_LABELS[lane]
-    model = LANE_MODELS[lane]
+    model = LANE_EFFECTIVE_MODELS[lane]
     effort = LANE_EFFORTS.get(lane)
     if model:
         if effort:
@@ -316,7 +317,7 @@ def load_prompt_template(prompt_path: Path | None, review_kind: str) -> str:
 
 # --- lanes -------------------------------------------------------------------
 # Each lane runs a CLI headless in the worktree and returns its raw final text.
-def _run_claude(prompt: str, wt: str, model: str) -> CompletedProcess[str]:
+def _claude_command(prompt: str, model: str) -> list[str]:
     cmd = [
         "claude",
         "-p",
@@ -328,31 +329,58 @@ def _run_claude(prompt: str, wt: str, model: str) -> CompletedProcess[str]:
     ]
     if model:
         cmd += ["--model", model]
-    return run(cmd, cwd=wt)
+    return cmd
 
 
-def _is_claude_model_limit_response(text: str) -> bool:
-    normalized = " ".join(text.lower().split())
-    return normalized.startswith(("you've reached your ", "you have reached your ")) and " limit." in normalized
+def _claude_model_unavailable(result: CompletedProcess[str]) -> bool:
+    if SENTINEL_OPEN in result.stdout:
+        return False
+    response = f"{result.stdout}\n{result.stderr}".lower()
+    reached_limit = "reached your" in response and " limit" in response
+    missing_model = "model" in response and any(
+        marker in response
+        for marker in ("not available", "unavailable", "not found", "unknown model")
+    )
+    return reached_limit or missing_model
 
 
 def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
-    model = LANE_MODELS["claude"]
-    p = _run_claude(prompt, wt, model)
-    if _is_claude_model_limit_response(p.stdout):
-        (out / f"claude.{model}.raw").write_text(p.stdout)
-        (out / f"claude.{model}.err").write_text(p.stderr)
-        if model != CLAUDE_LIMIT_RETRY_MODEL:
-            print(f"[claude] {model} limit reached; retrying with {CLAUDE_LIMIT_RETRY_MODEL}")
-            model = CLAUDE_LIMIT_RETRY_MODEL
-            LANE_MODELS["claude"] = model
-            p = _run_claude(prompt, wt, model)
-        if _is_claude_model_limit_response(p.stdout):
-            err = "\n".join(part for part in (p.stderr.strip(), p.stdout.strip()) if part)
-            (out / "claude.err").write_text(err)
-            return LaneResult("", 1, err)
-    (out / "claude.err").write_text(p.stderr)
-    return LaneResult(p.stdout, p.returncode, p.stderr)
+    primary_model = LANE_MODELS["claude"]
+    primary = run(_claude_command(prompt, primary_model), cwd=wt)
+    attempts = [(primary_model, primary)]
+
+    if _claude_model_unavailable(primary) and CLAUDE_FALLBACK_MODEL != primary_model:
+        print(
+            f"[claude] {primary_model or 'default'} unavailable; "
+            f"retrying once with {CLAUDE_FALLBACK_MODEL}"
+        )
+        fallback = run(_claude_command(prompt, CLAUDE_FALLBACK_MODEL), cwd=wt)
+        attempts.append((CLAUDE_FALLBACK_MODEL, fallback))
+        if not _claude_model_unavailable(fallback):
+            LANE_EFFECTIVE_MODELS["claude"] = CLAUDE_FALLBACK_MODEL
+            primary = fallback
+        else:
+            primary = CompletedProcess(
+                args=fallback.args,
+                returncode=1,
+                stdout="",
+                stderr=fallback.stderr or fallback.stdout,
+            )
+    elif _claude_model_unavailable(primary):
+        primary = CompletedProcess(
+            args=primary.args,
+            returncode=1,
+            stdout="",
+            stderr=primary.stderr or primary.stdout,
+        )
+
+    error_log = "\n\n".join(
+        f"[{model or 'default'}]\n"
+        f"{attempt.stderr or (attempt.stdout if _claude_model_unavailable(attempt) else '')}"
+        for model, attempt in attempts
+    )
+    (out / "claude.err").write_text(error_log)
+    return LaneResult(primary.stdout, primary.returncode, primary.stderr)
 
 
 def lane_codex(prompt: str, wt: str, out: Path) -> LaneResult:
@@ -1114,6 +1142,10 @@ def main() -> None:
         "(must keep the same {{...}} tokens + JSON output contract)",
     )
     ap.add_argument("--claude-model", help="override model for Claude Code")
+    ap.add_argument(
+        "--claude-fallback-model",
+        help="override the Claude model used once when the primary model is unavailable",
+    )
     ap.add_argument("--codex-model", help="override model for Codex")
     ap.add_argument("--antigravity-model", help="override model for Antigravity")
     ap.add_argument(
@@ -1129,10 +1161,14 @@ def main() -> None:
 
     if args.claude_model is not None:
         LANE_MODELS["claude"] = args.claude_model
+    global CLAUDE_FALLBACK_MODEL
+    if args.claude_fallback_model is not None:
+        CLAUDE_FALLBACK_MODEL = args.claude_fallback_model
     if args.codex_model is not None:
         LANE_MODELS["codex"] = args.codex_model
     if args.antigravity_model is not None:
         LANE_MODELS["antigravity"] = args.antigravity_model
+    LANE_EFFECTIVE_MODELS.update(LANE_MODELS)
 
     if args.post and args.report is not None:
         die("--post and --report are mutually exclusive")
