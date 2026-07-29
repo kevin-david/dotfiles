@@ -155,6 +155,7 @@ LANE_EFFORTS = {
     "claude": env("REVIEW_CLAUDE_EFFORT", "high"),
     "codex": env("REVIEW_CODEX_EFFORT", "high"),
 }
+CLAUDE_LIMIT_RETRY_MODEL = env("REVIEW_CLAUDE_LIMIT_RETRY_MODEL", "opus")
 
 
 SEVERITY_RANK = {"Critical": 0, "Important": 1, "Suggestion": 2}
@@ -248,8 +249,7 @@ def load_prompt_template(prompt_path: Path | None, review_kind: str) -> str:
 
 # --- lanes -------------------------------------------------------------------
 # Each lane runs a CLI headless in the worktree and returns its raw final text.
-def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
-    model = LANE_MODELS["claude"]
+def _run_claude(prompt: str, wt: str, model: str) -> CompletedProcess[str]:
     cmd = [
         "claude",
         "-p",
@@ -261,7 +261,29 @@ def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
     ]
     if model:
         cmd += ["--model", model]
-    p = run(cmd, cwd=wt)
+    return run(cmd, cwd=wt)
+
+
+def _is_claude_model_limit_response(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    return normalized.startswith(("you've reached your ", "you have reached your ")) and " limit." in normalized
+
+
+def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
+    model = LANE_MODELS["claude"]
+    p = _run_claude(prompt, wt, model)
+    if _is_claude_model_limit_response(p.stdout):
+        (out / f"claude.{model}.raw").write_text(p.stdout)
+        (out / f"claude.{model}.err").write_text(p.stderr)
+        if model != CLAUDE_LIMIT_RETRY_MODEL:
+            print(f"[claude] {model} limit reached; retrying with {CLAUDE_LIMIT_RETRY_MODEL}")
+            model = CLAUDE_LIMIT_RETRY_MODEL
+            LANE_MODELS["claude"] = model
+            p = _run_claude(prompt, wt, model)
+        if _is_claude_model_limit_response(p.stdout):
+            err = "\n".join(part for part in (p.stderr.strip(), p.stdout.strip()) if part)
+            (out / "claude.err").write_text(err)
+            return LaneResult("", 1, err)
     (out / "claude.err").write_text(p.stderr)
     return LaneResult(p.stdout, p.returncode, p.stderr)
 
