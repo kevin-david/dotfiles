@@ -180,6 +180,69 @@ REQUIRED_KEYS = (
     "description_notes",
     "findings",
 )
+ANTIGRAVITY_REVIEW_SCHEMA = {
+    "type": "object",
+    "required": list(REQUIRED_KEYS),
+    "properties": {
+        "eligible": {"type": "boolean"},
+        "behavioral_delta": {"type": "string"},
+        "inspected": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["path", "symbols", "conclusion"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "symbols": {"type": "array", "items": {"type": "string"}},
+                    "conclusion": {"type": "string"},
+                },
+            },
+        },
+        "coverage_gaps": {"type": "array", "items": {"type": "string"}},
+        "change_map": {
+            "type": "object",
+            "required": ["components", "mermaid"],
+            "properties": {
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "role"],
+                        "properties": {
+                            "name": {"type": "string"},
+                            "role": {"type": "string"},
+                        },
+                    },
+                },
+                "mermaid": {"type": "string"},
+            },
+        },
+        "method": {"type": "string"},
+        "assessment": {"type": "string"},
+        "strengths": {"type": "array", "items": {"type": "string"}},
+        "description_notes": {"type": "array", "items": {"type": "string"}},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["path", "line", "severity", "title", "confidence", "body"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "line": {"type": ["integer", "null"]},
+                    "start_line": {"type": ["integer", "null"]},
+                    "severity": {
+                        "type": "string",
+                        "enum": ["Critical", "Important", "Suggestion"],
+                    },
+                    "title": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "body": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+_ANTIGRAVITY_RETRYABLE_ERRORS = ("timeout waiting for response",)
 
 
 def die(msg: str) -> NoReturn:
@@ -324,40 +387,107 @@ def lane_antigravity(prompt: str, wt: str, out: Path) -> LaneResult:
 Antigravity execution boundary:
 - The checked-out review worktree is exactly `{worktree}`.
 - Before inspecting anything, run exactly: `{provenance_cmd}`
+- That first tool call must contain only that command. Do not append, redirect,
+  pipe, or combine it with another command.
 - Its output must be exactly `{expected_head}`. If it differs, stop and report failure.
 - Run every later repository command with its Cwd inside `{worktree}`, and read only
   repository files under that path. Do not use a similarly named checkout in the
   Antigravity scratch directory.
+- Do not copy or redirect the diff or any repository file into a scratch directory.
 
-{prompt}"""
-    cmd = [
-        "agy",
-        "-p",
-        grounded_prompt,
-        "--dangerously-skip-permissions",
-        "--output-format",
-        "stream-json",
-        "--print-timeout",
-        "10m",
-    ]
-    if LANE_MODELS["antigravity"]:
-        cmd += ["--model", LANE_MODELS["antigravity"]]
-    p = run(cmd, cwd=wt)
-    (out / "antigravity.stream.jsonl").write_text(p.stdout)
-    (out / "antigravity.err").write_text(p.stderr)
-    if p.returncode != 0:
-        return LaneResult("", p.returncode, p.stderr)
-    response, provenance_error = _parse_antigravity_stream(
-        p.stdout,
-        worktree=worktree,
-        provenance_cmd=provenance_cmd,
-        expected_head=expected_head,
-    )
-    if provenance_error:
-        err = "\n".join(part for part in (p.stderr.strip(), provenance_error) if part)
-        (out / "antigravity.err").write_text(err)
-        return LaneResult("", 1, err)
-    return LaneResult(response, 0, p.stderr)
+{prompt}
+
+Antigravity final-output override:
+- The CLI enforces a native JSON schema for the final result.
+- Return only the JSON object required by that schema.
+- Do not emit the `<<<REVIEW_JSON` / `REVIEW_JSON>>>` wrapper requested above.
+"""
+    schema = json.dumps(ANTIGRAVITY_REVIEW_SCHEMA, separators=(",", ":"))
+    for attempt in (1, 2):
+        attempt_prompt = grounded_prompt
+        if attempt == 2:
+            attempt_prompt += (
+                "\nThis is a fresh retry after the prior model generation timed out. "
+                "Inspect concisely, then emit the schema-constrained result once. "
+                "Do not repeat filler or status words.\n"
+            )
+        cmd = [
+            "agy",
+            "-p",
+            attempt_prompt,
+            "--dangerously-skip-permissions",
+            "--output-format",
+            "stream-json",
+            "--json-schema",
+            schema,
+            "--print-timeout",
+            "10m",
+        ]
+        if LANE_MODELS["antigravity"]:
+            cmd += ["--model", LANE_MODELS["antigravity"]]
+        p = run(cmd, cwd=wt)
+        if attempt == 1 and _antigravity_retryable_error(p.stdout) is not None:
+            (out / "antigravity.attempt1.stream.jsonl").write_text(p.stdout)
+            (out / "antigravity.attempt1.err").write_text(p.stderr)
+            print("[antigravity] generation timed out; retrying once with a fresh conversation")
+            continue
+
+        (out / "antigravity.stream.jsonl").write_text(p.stdout)
+        response, stream_error = _parse_antigravity_stream(
+            p.stdout,
+            worktree=worktree,
+            provenance_cmd=provenance_cmd,
+            expected_head=expected_head,
+        )
+        errors = [part for part in (p.stderr.strip(), stream_error) if part]
+        if p.returncode != 0 and not errors:
+            errors.append(f"agy exited {p.returncode} without a structured error")
+        if errors:
+            err = "\n".join(errors)
+            (out / "antigravity.err").write_text(err)
+            return LaneResult("", p.returncode or 1, err)
+        wrapped = f"{SENTINEL_OPEN}\n{response}\n{SENTINEL_CLOSE}"
+        (out / "antigravity.err").write_text("")
+        return LaneResult(wrapped, 0, "")
+
+    err = "Antigravity lane exhausted its generation retry without a result."
+    (out / "antigravity.err").write_text(err)
+    return LaneResult("", 1, err)
+
+
+def _antigravity_retryable_error(raw: str) -> str | None:
+    for line in raw.splitlines():
+        with contextlib.suppress(json.JSONDecodeError):
+            result = json.loads(line).get("result")
+            if not isinstance(result, dict):
+                continue
+            error = result.get("error")
+            if isinstance(error, str) and any(marker in error.lower() for marker in _ANTIGRAVITY_RETRYABLE_ERRORS):
+                return error
+    return None
+
+
+def _command_absolute_paths(command: str) -> set[str]:
+    """Return absolute non-executable paths passed through a shell command."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return set()
+    paths: set[str] = set()
+    expect_executable = True
+    for token in tokens:
+        if token in {"&&", "||", "|", ";"}:
+            expect_executable = True
+            continue
+        if expect_executable:
+            expect_executable = False
+            continue
+        candidate = token.lstrip("0123456789<>&")
+        if candidate.startswith("~"):
+            candidate = str(Path(candidate).expanduser())
+        if Path(candidate).is_absolute():
+            paths.add(candidate)
+    return paths
 
 
 def _parse_antigravity_stream(
@@ -371,6 +501,7 @@ def _parse_antigravity_stream(
     provenance_ok = False
     response = ""
     result_status = ""
+    result_error = ""
     outside_paths: set[str] = set()
 
     for line in raw.splitlines():
@@ -388,6 +519,8 @@ def _parse_antigravity_stream(
                     output = tool.get("output")
                     if command == provenance_cmd and isinstance(output, str):
                         provenance_ok = output.strip() == expected_head
+                    if isinstance(command, str):
+                        outside_paths.update(_command_absolute_paths(command))
                     for key, value in params.items():
                         if not isinstance(value, str) or not Path(value).is_absolute():
                             continue
@@ -404,23 +537,46 @@ def _parse_antigravity_stream(
                         except ValueError:
                             outside_paths.add(value)
         result = event.get("result")
-        if isinstance(result, dict) and isinstance(result.get("response"), str):
-            response = result["response"]
+        if isinstance(result, dict):
+            structured_output = result.get("structured_output")
+            raw_response = result.get("response")
+            if isinstance(structured_output, dict):
+                response = json.dumps(structured_output)
+            elif isinstance(raw_response, str):
+                response = raw_response
             result_status = str(result.get("status", ""))
+            error = result.get("error")
+            if isinstance(error, str):
+                result_error = error
 
+    outside_paths = {path for path in outside_paths if not _path_is_within(Path(path).resolve(), worktree)}
+    issues: list[str] = []
     if not provenance_ok:
-        return "", (
+        issues.append(
             "Antigravity lane rejected: it did not prove the review checkout with "
             f"`{provenance_cmd}` -> `{expected_head}`."
         )
     if outside_paths:
         paths = ", ".join(sorted(outside_paths))
-        return "", f"Antigravity lane rejected: repository tools escaped the review worktree: {paths}"
+        issues.append(f"Antigravity lane rejected: repository tools escaped the review worktree: {paths}")
     if result_status != "SUCCESS":
-        return "", f"Antigravity lane rejected: structured result status was {result_status or '(missing)'}."
+        detail = f": {result_error}" if result_error else ""
+        issues.append(
+            f"Antigravity lane rejected: structured result status was {result_status or '(missing)'}{detail}."
+        )
     if not response.strip():
-        return "", "Antigravity lane rejected: structured stream had no final response."
+        issues.append("Antigravity lane rejected: structured stream had no final response.")
+    if issues:
+        return "", "\n".join(issues)
     return response, None
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 LANES = {"claude": lane_claude, "codex": lane_codex, "antigravity": lane_antigravity}

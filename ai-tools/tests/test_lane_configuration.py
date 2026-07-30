@@ -97,6 +97,18 @@ class LaneConfigurationTest(unittest.TestCase):
             worktree = Path(td)
             expected_head = "a" * 40
             provenance_cmd = f"git -C {worktree} rev-parse HEAD"
+            review = {
+                "eligible": True,
+                "behavioral_delta": "Changes behavior.",
+                "inspected": [{"path": "src/service.py", "symbols": ["run"], "conclusion": "Correct."}],
+                "coverage_gaps": [],
+                "change_map": {"components": [], "mermaid": ""},
+                "method": "Inspected `src/service.py` and `run`.",
+                "assessment": "ready",
+                "strengths": [],
+                "description_notes": [],
+                "findings": [],
+            }
             stream = "\n".join(
                 [
                     json.dumps(
@@ -127,7 +139,11 @@ class LaneConfigurationTest(unittest.TestCase):
                     json.dumps(
                         {
                             "event": "result",
-                            "result": {"status": "SUCCESS", "response": "review"},
+                            "result": {
+                                "status": "SUCCESS",
+                                "response": f"{json.dumps(review)}\n{json.dumps(review)}",
+                                "structured_output": review,
+                            },
                         }
                     ),
                 ]
@@ -141,11 +157,130 @@ class LaneConfigurationTest(unittest.TestCase):
                 result = multi_model_review.lane_antigravity("prompt", td, worktree)
                 agy_cmd = run.call_args_list[1].args[0]
 
-        self.assertEqual(result, multi_model_review.LaneResult("review", 0, ""))
+        self.assertIn(multi_model_review.SENTINEL_OPEN, result.out)
+        self.assertIn(json.dumps(review), result.out)
+        self.assertEqual(result.out.count('"eligible": true'), 1)
+        self.assertEqual(result.code, 0)
+        self.assertEqual(result.err, "")
         self.assertIn("--output-format", agy_cmd)
+        self.assertIn("--json-schema", agy_cmd)
         grounded_prompt = agy_cmd[agy_cmd.index("-p") + 1]
         self.assertIn(str(worktree), grounded_prompt)
         self.assertIn(expected_head, grounded_prompt)
+
+    def test_antigravity_retries_a_structured_generation_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            worktree = Path(td)
+            expected_head = "a" * 40
+            provenance_cmd = f"git -C {worktree} rev-parse HEAD"
+            timed_out = CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=json.dumps(
+                    {
+                        "event": "result",
+                        "result": {
+                            "status": "ERROR",
+                            "response": "",
+                            "error": "timeout waiting for response",
+                        },
+                    }
+                ),
+                stderr="",
+            )
+            reviewed = CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "event": "step_update",
+                                "step_update": {
+                                    "state": "DONE",
+                                    "tool_info": {
+                                        "name": "run_command",
+                                        "parameters": {"CommandLine": provenance_cmd},
+                                        "output": expected_head,
+                                    },
+                                },
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "event": "result",
+                                "result": {
+                                    "status": "SUCCESS",
+                                    "response": json.dumps(
+                                        {
+                                            "eligible": True,
+                                            "behavioral_delta": "Changes behavior.",
+                                            "inspected": [],
+                                            "coverage_gaps": [],
+                                            "change_map": {"components": [], "mermaid": ""},
+                                            "method": "Inspected the diff.",
+                                            "assessment": "ready",
+                                            "strengths": [],
+                                            "description_notes": [],
+                                            "findings": [],
+                                        }
+                                    ),
+                                },
+                            }
+                        ),
+                    ]
+                ),
+                stderr="",
+            )
+            head = CompletedProcess(args=[], returncode=0, stdout=f"{expected_head}\n", stderr="")
+            with (
+                patch.object(
+                    multi_model_review,
+                    "run",
+                    side_effect=[head, timed_out, reviewed],
+                ) as run,
+                patch.dict(multi_model_review.LANE_MODELS, {"antigravity": ""}),
+            ):
+                result = multi_model_review.lane_antigravity("prompt", td, worktree)
+
+            self.assertEqual(result.code, 0)
+            self.assertTrue((worktree / "antigravity.attempt1.stream.jsonl").exists())
+            self.assertEqual(len(run.call_args_list), 3)
+
+    def test_antigravity_surfaces_stream_error_after_retry(self) -> None:
+        timed_out = CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "event": "result",
+                    "result": {
+                        "status": "ERROR",
+                        "response": "",
+                        "error": "timeout waiting for response",
+                    },
+                }
+            ),
+            stderr="",
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as td,
+            patch.object(
+                multi_model_review,
+                "run",
+                side_effect=[
+                    CompletedProcess(args=[], returncode=0, stdout=f"{'a' * 40}\n", stderr=""),
+                    timed_out,
+                    timed_out,
+                ],
+            ),
+            patch.dict(multi_model_review.LANE_MODELS, {"antigravity": ""}),
+        ):
+            result = multi_model_review.lane_antigravity("prompt", td, Path(td))
+
+        self.assertEqual(result.code, 1)
+        self.assertIn("timeout waiting for response", result.err)
 
     def test_antigravity_rejects_missing_checkout_provenance(self) -> None:
         stream = json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "review"}})
@@ -185,8 +320,10 @@ class LaneConfigurationTest(unittest.TestCase):
                             "tool_info": {
                                 "name": "run_command",
                                 "parameters": {
-                                    "CommandLine": "git status",
-                                    "Cwd": "/tmp/antigravity-cli/scratch/repository",
+                                    "CommandLine": (
+                                        "git -C /tmp/review-worktree diff HEAD^ "
+                                        "> /tmp/antigravity-cli/scratch/review.diff"
+                                    ),
                                 },
                             },
                         },
