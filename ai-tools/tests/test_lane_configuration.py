@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import tempfile
 import unittest
@@ -90,6 +91,120 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(result.code, 1)
         self.assertEqual(result.out, "")
         self.assertIn("Opus limit", result.err)
+
+    def test_antigravity_returns_only_grounded_structured_result(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            worktree = Path(td)
+            expected_head = "a" * 40
+            provenance_cmd = f"git -C {worktree} rev-parse HEAD"
+            stream = "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "event": "step_update",
+                            "step_update": {
+                                "state": "DONE",
+                                "tool_info": {
+                                    "name": "run_command",
+                                    "parameters": {"CommandLine": provenance_cmd},
+                                    "output": f"{expected_head}\n",
+                                },
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "event": "step_update",
+                            "step_update": {
+                                "state": "DONE",
+                                "tool_info": {
+                                    "name": "view_file",
+                                    "parameters": {"AbsolutePath": str(worktree / "src" / "service.py")},
+                                },
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "event": "result",
+                            "result": {"status": "SUCCESS", "response": "review"},
+                        }
+                    ),
+                ]
+            )
+            completed = CompletedProcess(args=[], returncode=0, stdout=stream, stderr="")
+            head = CompletedProcess(args=[], returncode=0, stdout=f"{expected_head}\n", stderr="")
+            with (
+                patch.object(multi_model_review, "run", side_effect=[head, completed]) as run,
+                patch.dict(multi_model_review.LANE_MODELS, {"antigravity": ""}),
+            ):
+                result = multi_model_review.lane_antigravity("prompt", td, worktree)
+                agy_cmd = run.call_args_list[1].args[0]
+
+        self.assertEqual(result, multi_model_review.LaneResult("review", 0, ""))
+        self.assertIn("--output-format", agy_cmd)
+        grounded_prompt = agy_cmd[agy_cmd.index("-p") + 1]
+        self.assertIn(str(worktree), grounded_prompt)
+        self.assertIn(expected_head, grounded_prompt)
+
+    def test_antigravity_rejects_missing_checkout_provenance(self) -> None:
+        stream = json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "review"}})
+        response, error = multi_model_review._parse_antigravity_stream(
+            stream,
+            worktree=Path("/tmp/review-worktree"),
+            provenance_cmd="git -C /tmp/review-worktree rev-parse HEAD",
+            expected_head="a" * 40,
+        )
+
+        self.assertEqual(response, "")
+        self.assertIn("did not prove the review checkout", error or "")
+
+    def test_antigravity_rejects_repository_tool_outside_worktree(self) -> None:
+        expected_head = "a" * 40
+        provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
+        stream = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "run_command",
+                                "parameters": {"CommandLine": provenance_cmd},
+                                "output": expected_head,
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "run_command",
+                                "parameters": {
+                                    "CommandLine": "git status",
+                                    "Cwd": "/tmp/antigravity-cli/scratch/repository",
+                                },
+                            },
+                        },
+                    }
+                ),
+                json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "review"}}),
+            ]
+        )
+
+        response, error = multi_model_review._parse_antigravity_stream(
+            stream,
+            worktree=Path("/tmp/review-worktree"),
+            provenance_cmd=provenance_cmd,
+            expected_head=expected_head,
+        )
+
+        self.assertEqual(response, "")
+        self.assertIn("escaped the review worktree", error or "")
 
 
 if __name__ == "__main__":

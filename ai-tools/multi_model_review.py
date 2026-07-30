@@ -27,6 +27,7 @@ import contextlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -316,12 +317,110 @@ def lane_antigravity(prompt: str, wt: str, out: Path) -> LaneResult:
     # The review worktree is a fresh throwaway dir Antigravity has never "trusted",
     # so it downgrades to default approval and refuses tool calls headlessly.
     # --dangerously-skip-permissions bypasses approval prompts.
-    cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions", "--print-timeout", "10m"]
+    worktree = Path(wt).resolve()
+    expected_head = run_ok(["git", "-C", str(worktree), "rev-parse", "HEAD"]).strip()
+    provenance_cmd = f"git -C {shlex.quote(str(worktree))} rev-parse HEAD"
+    grounded_prompt = f"""\
+Antigravity execution boundary:
+- The checked-out review worktree is exactly `{worktree}`.
+- Before inspecting anything, run exactly: `{provenance_cmd}`
+- Its output must be exactly `{expected_head}`. If it differs, stop and report failure.
+- Run every later repository command with its Cwd inside `{worktree}`, and read only
+  repository files under that path. Do not use a similarly named checkout in the
+  Antigravity scratch directory.
+
+{prompt}"""
+    cmd = [
+        "agy",
+        "-p",
+        grounded_prompt,
+        "--dangerously-skip-permissions",
+        "--output-format",
+        "stream-json",
+        "--print-timeout",
+        "10m",
+    ]
     if LANE_MODELS["antigravity"]:
         cmd += ["--model", LANE_MODELS["antigravity"]]
     p = run(cmd, cwd=wt)
+    (out / "antigravity.stream.jsonl").write_text(p.stdout)
     (out / "antigravity.err").write_text(p.stderr)
-    return LaneResult(p.stdout, p.returncode, p.stderr)
+    if p.returncode != 0:
+        return LaneResult("", p.returncode, p.stderr)
+    response, provenance_error = _parse_antigravity_stream(
+        p.stdout,
+        worktree=worktree,
+        provenance_cmd=provenance_cmd,
+        expected_head=expected_head,
+    )
+    if provenance_error:
+        err = "\n".join(part for part in (p.stderr.strip(), provenance_error) if part)
+        (out / "antigravity.err").write_text(err)
+        return LaneResult("", 1, err)
+    return LaneResult(response, 0, p.stderr)
+
+
+def _parse_antigravity_stream(
+    raw: str,
+    *,
+    worktree: Path,
+    provenance_cmd: str,
+    expected_head: str,
+) -> tuple[str, str | None]:
+    """Extract the final response and prove Antigravity used the intended checkout."""
+    provenance_ok = False
+    response = ""
+    result_status = ""
+    outside_paths: set[str] = set()
+
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        update = event.get("step_update")
+        if isinstance(update, dict):
+            tool = update.get("tool_info")
+            if isinstance(tool, dict) and update.get("state") == "DONE":
+                params = tool.get("parameters")
+                if isinstance(params, dict):
+                    command = params.get("CommandLine")
+                    output = tool.get("output")
+                    if command == provenance_cmd and isinstance(output, str):
+                        provenance_ok = output.strip() == expected_head
+                    for key, value in params.items():
+                        if not isinstance(value, str) or not Path(value).is_absolute():
+                            continue
+                        if key.lower() not in {
+                            "absolutepath",
+                            "cwd",
+                            "path",
+                            "searchdirectory",
+                            "searchpath",
+                        }:
+                            continue
+                        try:
+                            Path(value).resolve().relative_to(worktree)
+                        except ValueError:
+                            outside_paths.add(value)
+        result = event.get("result")
+        if isinstance(result, dict) and isinstance(result.get("response"), str):
+            response = result["response"]
+            result_status = str(result.get("status", ""))
+
+    if not provenance_ok:
+        return "", (
+            "Antigravity lane rejected: it did not prove the review checkout with "
+            f"`{provenance_cmd}` -> `{expected_head}`."
+        )
+    if outside_paths:
+        paths = ", ".join(sorted(outside_paths))
+        return "", f"Antigravity lane rejected: repository tools escaped the review worktree: {paths}"
+    if result_status != "SUCCESS":
+        return "", f"Antigravity lane rejected: structured result status was {result_status or '(missing)'}."
+    if not response.strip():
+        return "", "Antigravity lane rejected: structured stream had no final response."
+    return response, None
 
 
 LANES = {"claude": lane_claude, "codex": lane_codex, "antigravity": lane_antigravity}
