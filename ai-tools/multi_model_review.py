@@ -664,8 +664,6 @@ def review_contract_issues(data: Mapping[str, object], repo_files: set[str]) -> 
     mermaid = change_map.get("mermaid")
     if not isinstance(mermaid, str):
         issues.append("change_map.mermaid must be a string")
-    elif len(components) >= 3 and "flowchart" not in mermaid:
-        issues.append("change_map.mermaid required for 3+ components")
     return issues
 
 

@@ -78,9 +78,8 @@ Before judging the diff, externalize the model you used to review it:
   theory is a finding, not only a gap: emit it at confidence 50 with
   `Unverified:` framing, and never assert the missing link as established
   fact instead.
-- List the interacting components and each role. When the changed behavior spans
-  at least three components, include a compact Mermaid `flowchart`; otherwise
-  emit an empty Mermaid string. The diagram is review evidence, not decoration.
+- List the interacting components and each role. A compact Mermaid `flowchart` is optional; emit an
+  empty string when you skip it.
 - Select deeper lenses from the code: stateful paths require ordering and
   ownership checks; persistence requires transaction and migration checks;
   security requires trust-boundary checks; numerical code requires units and
@@ -389,8 +388,7 @@ Rules for the block:
 - `method` must include at least two backticked references to real repo paths or
   symbols, such as `src/path/to/file.ext` and `caller_or_consumer()`. The runner
   validates them mechanically. Unquoted names do not count.
-- `change_map.mermaid` is required when `change_map.components` has at least
-  three entries; emit an empty string for a smaller change.
+- `change_map.mermaid` is optional; emit an empty string when you skip it.
 - Valid JSON, no trailing commas, no comments. `start_line` is optional (omit
   for a single line). `severity` ∈ `Critical | Important | Suggestion`.
 - `description_notes`: `[]` when the PR description needs no tightening (it

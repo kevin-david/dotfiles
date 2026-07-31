@@ -31,15 +31,15 @@ class ReviewPromptTemplateDiscoveryTest(unittest.TestCase):
 # from a path, not a shallow treatment surviving on one (the known blind spot —
 # reconcile depth by review, not by prose-length assertions).
 SHARED_CONCEPT_MARKERS = {
-    "producing mechanism": ("manual", "code", "plan"),
-    "subtractive": ("manual", "code", "plan"),
+    "producing mechanism": ("manual", "code", "plan", "bar"),
+    "subtractive": ("manual", "code", "plan", "bar"),
     "round trips": ("manual", "code", "plan"),
-    "Unverified:": ("manual", "code", "plan"),
+    "Unverified:": ("manual", "code", "plan", "bar"),
     "event loop stalls": ("manual", "code", "plan"),
     "tooltip": ("manual", "code", "plan"),
-    "presumptively": ("manual", "code", "plan"),
-    "operator-facing": ("manual", "code", "plan"),
-    "missing evidence": ("manual", "code", "plan"),
+    "presumptively": ("manual", "code", "plan", "bar"),
+    "operator-facing": ("manual", "code", "plan", "bar"),
+    "missing evidence": ("manual", "code", "plan", "bar"),
     "risk ordered first": ("manual", "plan"),
 }
 
@@ -60,7 +60,7 @@ class FallbackSnapshotContractTest(unittest.TestCase):
         texts = {key: " ".join(text.split()) for key, text in self._snapshots().items()}
         for marker, expected_paths in SHARED_CONCEPT_MARKERS.items():
             for key in expected_paths:
-                if key == "manual":
+                if key not in texts:  # only code/plan have checked-in snapshots
                     continue
                 self.assertIn(marker, texts[key], f"marker {marker!r} missing from the {key} snapshot")
 
@@ -79,11 +79,15 @@ class ReviewPromptRenderingTest(unittest.TestCase):
             self.skipTest("review-rubric skill not installed locally")
 
     def _authored_paths(self) -> dict[str, str]:
+        # "bar" is the portable review bar the native reviewers read
+        # (~/.claude/REVIEWING.md); pinning it here keeps it from drifting
+        # off the rubric's shared concepts.
         templates = render_review_prompt.templates_dir()
         return {
             "manual": (templates.parent / "manual.md").read_text(),
             "code": (templates / "code-review.md").read_text(),
             "plan": (templates / "plan-review.md").read_text(),
+            "bar": (templates.parents[2] / "REVIEWING.md").read_text(),
         }
 
     def test_shared_concepts_present_in_expected_authored_paths(self) -> None:

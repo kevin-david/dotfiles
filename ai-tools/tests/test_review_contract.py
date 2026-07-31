@@ -48,7 +48,7 @@ class ReviewContractTest(unittest.TestCase):
             self.assertIn('"inspected"', prompt)
             self.assertIn('"coverage_gaps"', prompt)
             self.assertIn('"change_map"', prompt)
-            self.assertIn("at least three components", prompt)
+            self.assertIn("`change_map.mermaid` is optional", prompt)
             sample = multi_model_review.extract_findings(prompt)
             self.assertIsNotNone(sample)
             self.assertFalse(set(multi_model_review.REQUIRED_KEYS) - set(sample or {}))
@@ -66,13 +66,13 @@ REVIEW_JSON>>>
 
         self.assertEqual(review, {"assessment": "complete", "findings": []})
 
-    def test_three_component_map_requires_flowchart(self) -> None:
+    def test_empty_mermaid_is_valid_for_any_component_count(self) -> None:
         review = self.valid_review()
         review["change_map"]["mermaid"] = ""
 
         issues = multi_model_review.review_contract_issues(review, {"src/service.py"})
 
-        self.assertIn("change_map.mermaid required for 3+ components", issues)
+        self.assertEqual(issues, [])
 
     def test_inspection_evidence_must_name_real_paths_and_two_symbols(self) -> None:
         review = self.valid_review()
