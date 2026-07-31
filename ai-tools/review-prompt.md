@@ -68,7 +68,11 @@ Before judging the diff, externalize the model you used to review it:
   escape hatch (`cast`, ignore directives). Record every relevant target or
   state the coverage gap. A bare "checked fakes" does not satisfy this sweep:
   name each target's path and symbol in `inspected`, and name the search in
-  `method`.
+  `method`. The same sweep applies to a changed semantic contract — a field's
+  meaning, a severity or status scale, a threshold, a configuration default:
+  inspect every producer, consumer, parser, validator, filter, sorter, test,
+  and operator-facing description of the old meaning, and treat a prose rule
+  with no enforcing check as a finding wherever a machine consumes the output.
 - State coverage gaps honestly. An empty list means you found no material gap,
   not that the field may be skipped. A gap that carries a concrete failure
   theory is a finding, not only a gap: emit it at confidence 50 with
@@ -146,7 +150,9 @@ not a ceiling.
    pin current behavior without asserting anything meaningful, or that test
    removed functionality. Also flag when new logic is untestable as written —
    pure logic entangled with framework/IO imports the test harness can't
-   load — and name the extraction that would make it reachable.
+   load — and name the extraction that would make it reachable. Verify every
+   supported fallback and clean-install path; a skipped contract test is
+   missing evidence, not a pass.
 
 5. **Comment & prose conciseness.** Comments now wrong vs. the code (rot), or
    that restate *what* the code does instead of justifying *why*. Flag **brittle**
@@ -243,7 +249,8 @@ correct as written:
   PR** (`git diff {{BASE_SHA}}...HEAD`, or read the base version of the
   function). If the behavior you're flagging is identical pre- and post-diff,
   it is **not** a regression — it's pre-existing. Reclassify it under the
-  pre-existing rules below and drop its severity accordingly. "This path looks
+  pre-existing rules below; pre-existence changes scope and attribution, not
+  impact, so severity stays what the evidence supports. "This path looks
   wrong" is not the same as "this PR broke this path"; only the latter is a
   regression, and asserting one without checking the base is the most common way
   these reviews cry wolf.

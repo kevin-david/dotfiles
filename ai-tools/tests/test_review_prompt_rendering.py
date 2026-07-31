@@ -38,8 +38,35 @@ SHARED_CONCEPT_MARKERS = {
     "event loop stalls": ("manual", "code", "plan"),
     "tooltip": ("manual", "code", "plan"),
     "presumptively": ("manual", "code", "plan"),
+    "operator-facing": ("manual", "code", "plan"),
+    "missing evidence": ("manual", "code", "plan"),
     "risk ordered first": ("manual", "plan"),
 }
+
+
+class FallbackSnapshotContractTest(unittest.TestCase):
+    """The checked-in snapshots are the runtime prompts on a machine without
+    the review-rubric skill installed, so their contract is asserted
+    unconditionally — a skipped contract test on the fallback path would be
+    missing evidence, not a pass."""
+
+    def _snapshots(self) -> dict[str, str]:
+        return {
+            "code": (TOOLS_DIR / "review-prompt.md").read_text(),
+            "plan": (TOOLS_DIR / "review-prompt-plan.md").read_text(),
+        }
+
+    def test_shared_concepts_present_in_snapshots(self) -> None:
+        texts = {key: " ".join(text.split()) for key, text in self._snapshots().items()}
+        for marker, expected_paths in SHARED_CONCEPT_MARKERS.items():
+            for key in expected_paths:
+                if key == "manual":
+                    continue
+                self.assertIn(marker, texts[key], f"marker {marker!r} missing from the {key} snapshot")
+
+    def test_no_positional_lens_references_in_snapshots(self) -> None:
+        for key, text in self._snapshots().items():
+            self.assertNotRegex(text, r"(?i)lens \d", f"positional lens reference in the {key} snapshot")
 
 
 class ReviewPromptRenderingTest(unittest.TestCase):
@@ -60,7 +87,9 @@ class ReviewPromptRenderingTest(unittest.TestCase):
         }
 
     def test_shared_concepts_present_in_expected_authored_paths(self) -> None:
-        texts = self._authored_paths()
+        # Whitespace-normalized so ordinary re-wrapping can't split a marker
+        # phrase across a line break.
+        texts = {key: " ".join(text.split()) for key, text in self._authored_paths().items()}
         for marker, expected_paths in SHARED_CONCEPT_MARKERS.items():
             for key in expected_paths:
                 self.assertIn(marker, texts[key], f"marker {marker!r} missing from the {key} path")

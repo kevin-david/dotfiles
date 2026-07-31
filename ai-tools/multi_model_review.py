@@ -669,6 +669,30 @@ def review_contract_issues(data: Mapping[str, object], repo_files: set[str]) -> 
     return issues
 
 
+def partition_findings(raw: object, threshold: int) -> tuple[list[Finding], list[str]]:
+    """Threshold-filter findings and enforce the lead-label contract: the
+    templates make `Unverified:` mandatory for any finding kept at confidence
+    <=50, so an unlabelled lead is exactly the asserted-as-established claim
+    the scale exists to prevent — drop it and report its title instead of
+    rendering it."""
+    kept: list[Finding] = []
+    dropped: list[str] = []
+    for f in raw if isinstance(raw, list) else []:
+        if not isinstance(f, dict):
+            continue
+        f = cast("Finding", f)
+        conf = f.get("confidence", 100)
+        if not isinstance(conf, (int, float)):
+            conf = 100
+        if conf < threshold:
+            continue
+        if conf <= 50 and "Unverified:" not in f"{f.get('title', '')}\n{f.get('body', '')}":
+            dropped.append(str(f.get("title") or "untitled")[:60])
+            continue
+        kept.append(f)
+    return kept, dropped
+
+
 def render_review_overview(reviews: list[tuple[str, LaneReview]], head: Sha) -> str:
     lane, review = reviews[0]
     parts = ["## Multi-review change map", "", f"Reviewed head: `{head[:12]}` · map from `{lane}` lane", ""]
@@ -829,12 +853,17 @@ def process_lane(lane: str, res: LaneResult, ctx: ReviewCtx, out: Path) -> None:
     contract_issues = review_contract_issues(data, ctx.repo_files)
     if contract_issues:
         incomplete_reasons.append(f"contract: {'; '.join(contract_issues)}")
+    findings, unlabelled_leads = partition_findings(data.get("findings", []), THRESHOLD)
+    if unlabelled_leads:
+        incomplete_reasons.append(
+            "dropped unlabelled lead finding(s) — confidence <=50 requires `Unverified:`: "
+            + "; ".join(unlabelled_leads)
+        )
     for reason in incomplete_reasons:
         print(f"  [{lane}] INCOMPLETE — {reason}", file=sys.stderr)
         ctx.incomplete.append(f"{lane} ({reason})")
     incomplete_reason = "; ".join(incomplete_reasons)
 
-    findings = [f for f in data.get("findings", []) if f.get("confidence", 100) >= THRESHOLD]
     findings.sort(key=lambda f: SEVERITY_RANK.get(f.get("severity", "Suggestion"), 3))
     # Two buckets, kept apart so a finding about code this PR never touched can't
     # masquerade as part of the verdict on the PR: `inscope` = findings on a

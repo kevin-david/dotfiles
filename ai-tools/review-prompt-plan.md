@@ -83,7 +83,13 @@ Before judging the plan, externalize the model you used to review it:
   and type-checker escape hatch (`cast`, ignore directives). Record every
   relevant target or state the coverage gap. A bare "checked fakes" does not
   satisfy this sweep: name each target's path and symbol in `inspected`, and name
-  the search in `method`.
+  the search in `method`. The same sweep applies to a planned change to a
+  semantic contract — a field's meaning, a severity or status scale, a
+  threshold, a configuration default: verify the plan accounts for every
+  producer, consumer, parser, validator, filter, sorter, test, and
+  operator-facing description of the old meaning, and treat a planned prose
+  rule with no enforcing check as a finding wherever a machine consumes the
+  output.
 - State coverage gaps honestly. An empty list means you found no material gap,
   not that the field may be skipped. A gap that carries a concrete failure
   theory is a finding, not only a gap: emit it at confidence 50 with
@@ -174,7 +180,9 @@ Lenses for a plan. Add your own freely — this is a floor, not a ceiling.
    functionality, or duplicate each other? Does the plan verify on the real
    running surface where that's what the change demands, rather than treating an
    import/unit-only pass as done? Are there steps whose described test would not
-   actually fail before the implementation / pass after?
+   actually fail before the implementation / pass after? Do the planned tests
+   cover every supported fallback and clean-install path — a contract test
+   that would skip on one of them is missing evidence, not a pass.
 
 7. **Placeholders & under-specification.** The plan-document failure mode: "TBD",
    "handle errors appropriately", "adapt as needed", "similar to the above"

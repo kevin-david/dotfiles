@@ -102,3 +102,42 @@ REVIEW_JSON>>>
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeadLabelContractTest(unittest.TestCase):
+    """partition_findings enforces the templates' lead-label rule at the
+    structured-output boundary: an unlabelled confidence-50 finding must not
+    survive to be rendered as an established claim."""
+
+    def test_unlabelled_lead_is_dropped_and_reported(self) -> None:
+        kept, dropped = multi_model_review.partition_findings(
+            [{"confidence": 50, "title": "Regression in risk path", "body": "This is broken."}], 50
+        )
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped, ["Regression in risk path"])
+
+    def test_labelled_lead_is_kept(self) -> None:
+        kept, dropped = multi_model_review.partition_findings(
+            [{"confidence": 50, "title": "Possible stale read", "body": "Unverified: worker topology."}], 50
+        )
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped, [])
+
+    def test_verified_finding_needs_no_label(self) -> None:
+        kept, dropped = multi_model_review.partition_findings(
+            [{"confidence": 90, "title": "Fail-open check", "body": "Proven by trace."}], 50
+        )
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped, [])
+
+    def test_subthreshold_findings_are_filtered_without_label_noise(self) -> None:
+        kept, dropped = multi_model_review.partition_findings(
+            [{"confidence": 25, "title": "Hunch", "body": "Maybe."}], 50
+        )
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped, [])
+
+    def test_missing_confidence_defaults_to_kept(self) -> None:
+        kept, dropped = multi_model_review.partition_findings([{"title": "No confidence field", "body": "Body."}], 50)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped, [])
