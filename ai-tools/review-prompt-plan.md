@@ -85,7 +85,10 @@ Before judging the plan, externalize the model you used to review it:
   satisfy this sweep: name each target's path and symbol in `inspected`, and name
   the search in `method`.
 - State coverage gaps honestly. An empty list means you found no material gap,
-  not that the field may be skipped.
+  not that the field may be skipped. A gap that carries a concrete failure
+  theory is a finding, not only a gap: emit it at confidence 50 with
+  `Unverified:` framing, and never assert the missing link as established
+  fact instead.
 - List the interacting components and each role. When the planned behavior spans
   at least three components, include a compact Mermaid `flowchart`; otherwise
   emit an empty Mermaid string. The diagram is review evidence, not decoration.
@@ -95,11 +98,48 @@ Before judging the plan, externalize the model you used to review it:
   precision checks; UI requires lifecycle checks; external integrations require
   schema, retry, and failure checks. Do not force irrelevant lenses.
 
+## Solution fit — judge the plan before its correctness
+
+A correct plan for the wrong change is still the wrong change, so ask these
+before the lenses below. Each row needs the named evidence; a row without it
+is a preference, not a finding. Identify the producing
+mechanism from the code, not from the change's own framing — the stated
+problem is a claim to verify, not a fact.
+
+| Ask | Finding when | Evidence required |
+|---|---|---|
+| Does the plan eliminate the producing mechanism? | The requirement is assumed, a proposed solution is restated as the need, or a fix targets a symptom while the mechanism stays live | Name the mechanism and the input that still reaches it |
+| Does this belong here? | The planned change sits in a component that lacks the state or authority the decision needs, so it would duplicate, reconstruct, or guess it | Name the state needed and the component that already owns it |
+| Does it create a second authority or path? | Two mechanisms could then make the same decision under divergent rules, or a second way to express an established concept appears | Name both paths and the input on which they can diverge |
+| Is there a smaller sufficient change? | An existing seam, unconditional rule, or deletion produces the required behavior with less state to synchronize | Name the alternative and any required behavior it would fail to preserve. If none, name the callers and requirements checked |
+| Does it cover the whole cause? | The plan serves one caller of a need shared by others it does not mention, or addresses one of several sites that reach the cause | Name the other reaching sites and confirm they are unaddressed |
+| Is risk ordered first? | The plan builds on an unvalidated assumption instead of testing it in an early step | Name the assumption and the earlier step that could have tested it — an existing staging, spike, or validation step counts |
+
+### Subtractive check
+
+Plans tend to stack new mechanisms on old. Require a concrete subtractive
+alternative, but do not treat addition, layering, or a flag as a finding by
+itself. When the producing mechanism is an existing optimization or
+special case, the candidate deletion is that mechanism itself — a patch at
+its consumers is not the subtractive option.
+
+| Ask | Finding when | Evidence required |
+|---|---|---|
+| Was a subtractive option weighed? | The plan adds a mechanism where removing or relaxing an existing one — often an earlier optimization or special case — achieves the same outcome | Name the deletion and any required behavior it breaks. If none was found, name the inspected callers and consumers supporting that conclusion |
+| Replacement that only adds | The plan describes a step as replacing behavior, but the old path remains reachable | Name the old path and the input that still reaches it |
+| Added layer or flag | A planned wrapper, adapter, or option creates a concrete sync burden, divergent result, or unnecessary supported state | Name the present cost or the input on which behavior diverges |
+| Superseded leftovers | Code the plan obsoletes has no removal step: unused function, unreachable branch, dead test | Name the dead symbol |
+
+When the repo documents a binding simplicity rule, cite it; do not elevate a
+preference without a concrete consequence. A "simplification" that changes
+observable behavior in a correctness-critical path is a behavior change, not
+a simplification — flag it as one.
+
 ## What to look for
 
 Lenses for a plan. Add your own freely — this is a floor, not a ceiling.
 
-1. **Claims that don't match the repo.** Wrong/oudated file paths, function or
+1. **Claims that don't match the repo.** Wrong/outdated file paths, function or
    type names that don't exist, mis-stated signatures, stale line references, a
    test asserting on an attribute or fixture the real code doesn't have, a command
    that wouldn't run. Each is a step that fails on contact.
@@ -107,7 +147,8 @@ Lenses for a plan. Add your own freely — this is a floor, not a ceiling.
 2. **Correctness of the planned approach.** Will the logic the plan describes
    actually do what it claims? Logic errors, broken invariants, mishandled
    edge/empty/error cases baked into the design, races, ordering assumptions that
-   don't hold. Prioritize what would actually be hit.
+   don't hold, event loop stalls the design would bake in (synchronous I/O or
+   heavy computation on the main thread). Prioritize what would actually be hit.
 
 3. **Silent failures & wrong-answer fallbacks in the design.** A planned lookup
    that, on a miss, would return a plausible placeholder (`0`, `""`, `"unknown"`, a
@@ -148,6 +189,26 @@ Lenses for a plan. Add your own freely — this is a floor, not a ceiling.
    crowd out the substantive lenses above — a verbose-but-correct plan is far
    better than a tight wrong one.
 
+9. **Configuration mismatches.** Planned behavior that would contradict the
+   user-facing documentation, tooltips, or schema the plan keeps or
+   specifies — or that leaves them stale with no update step.
+
+## Performance and cost
+
+Judge the planned design's cost the way you judge its correctness. State the
+input size or bound and the resulting count; "could be slow" with no named N
+is not a finding, and neither is a micro-optimization with no arithmetic
+behind it. Where the plan or repo states or implies both sides of a rate
+comparison, multiply them out and put both numbers in the finding.
+
+| Ask | Finding when | Evidence required |
+|---|---|---|
+| Complexity in the real N | The design nests iteration or puts a lookup inside a loop over a collection that grows with real data | Name N, where it comes from, and an observed magnitude, configured bound, or defensible worst case |
+| Round trips | A planned query, RPC, or cache call inside a loop (N+1) | Count round trips per operation the design implies |
+| Persisted volume | Planned bytes written × frequency × retention grows without bound; a new key or stream has no TTL or cap | State the growth rate and the retention |
+| Bounded-buffer arithmetic | A bounded stream, cache, or buffer whose eviction rate the design does not match to its write rate | State the inequality and which side the design lands on |
+| Repeated work | A value the design recomputes per item that is invariant within the batch | Name the invariant and the loop |
+
 ## Honor the repo's conventions
 
 This repo documents its own engineering rules in files like `AGENTS.md`,
@@ -159,7 +220,7 @@ and don't penalize a deliberate, documented exception the plan calls out.
 
 ## Review the PR description too
 
-Hold the PR description to the same conciseness bar as the plan prose (lens 8):
+Hold the PR description to the same bar as the plan-prose-conciseness lens:
 why over what, no padding. It isn't part of the diff, so put any feedback in the
 `description_notes` output field (**not** `findings`), quoting the bloated passage
 and giving the tighter rewrite. If it's already tight or empty, say nothing.
@@ -177,26 +238,61 @@ Don't grade your own homework. For every candidate finding, switch sides and
   you missed; maybe a later step covers the gap; maybe the ordering is fine
   because of something you overlooked.
 - For a "this won't work" claim, construct the concrete way it fails — the input,
-  the call, the missing definition. If you can't, you don't have a finding.
+  the call, the missing definition. If you cannot complete the failing trace,
+  keep the candidate only at confidence 50 when you have a concrete failure
+  theory and can name the single material link that remains unverified —
+  prefix that gap with `Unverified:` and state the outcome conditionally.
+  Otherwise score it 25 and drop it. Never present a 50-level lead as an
+  established defect. When a finding's core is verified but a material
+  extension is not, keep the earned confidence and label the extension inline
+  with `Unverified:` — reserve confidence 50 for findings whose entire
+  failure theory hinges on the unverified link.
 - For a "the plan forgot X" claim, search the whole plan for X first (it may be in
   another section), and the repo (it may already be handled).
 
-If the finding survives refutation, keep it. If not, drop it or score it down.
-Default to dropping when uncertain: a false positive that sends a human chasing a
-non-issue costs more than a missed nitpick.
+If the finding survives refutation, keep it. An **unlabelled** claim presented
+as established is the expensive failure; a **labelled** lead carrying its own
+missing link is cheap and welcome. Drop what fails refutation or has no
+concrete failure theory — do not pad.
 
-Then score the confidence you *earned by surviving refutation* 0–100:
+Then score the confidence you *earned by surviving refutation* 0–100. This
+axis is evidentiary certainty only — impact lives in `severity`:
 
-- **0** — false positive under light scrutiny.
-- **25** — might be real, couldn't verify against the code; stylistic and not in
-  the repo's documented rules.
-- **50** — verified real, but a nitpick or rarely consequential.
+- **0** — refuted under scrutiny.
+- **25** — plausible but unverified against the code; or stylistic and not in
+  the repo's documented rules. Drop it.
+- **50** — credible lead with a concrete failure theory, but one material
+  link remains unverified. The finding must say `Unverified:`, name the
+  missing check, and frame its title and body conditionally.
 - **75** — verified against the repo/plan; the plan as written would actually go
   wrong here, or it violates a documented rule.
 - **100** — certain; you can point to the exact code or step that proves it.
 
+`severity` carries impact, separately. A plan that would ship a reachable
+silent wrong answer into a correctness-critical decision — a stale value
+presented as fresh, a placeholder substituted for a failed lookup, one field
+standing in for a semantically different one — is presumptively **Critical**.
+Downgrade only with evidence that limits its reachability or impact.
+
 **Only report findings scoring ≥ {{THRESHOLD}}.** If nothing clears the bar, say
 "No issues found" and stop. Do not pad to look thorough.
+
+## Pre-existing design flaws — flag, but caveat
+
+A real flaw in the existing system that the plan did **not** introduce: still
+surface it, but prefix its title with `Pre-existing:` and say in the body
+that it predates this plan and is out of scope to fix here. Exception — it is
+an in-scope plan finding, not pre-existing, when the plan depends on the
+flaw or the flaw invalidates a planned assumption, sequence, migration, or
+cutover.
+
+**Keep the verdict scoped to the plan.** Your `assessment` and `strengths`
+must describe only what *this plan proposes*. Do not praise, grade, or pass
+judgment on the existing system the plan doesn't touch — a strength or a
+"needs-rework" reason that's actually about unrelated existing design
+misrepresents the plan to anyone reading the headline. A genuine pre-existing
+flaw still goes in `findings` (marked `Pre-existing:`, with its real `path`),
+but it must never leak into the assessment or the strengths list.
 
 ## What is NOT a finding (drop these)
 
@@ -204,6 +300,10 @@ Then score the confidence you *earned by surviving refutation* 0–100:
   plan review, not a defect.
 - Pedantic nitpicks a senior engineer wouldn't raise; bikeshedding naming or
   wording that's already clear.
+- "I would have designed it differently," with no named failure, cost,
+  duplicated authority, or specific deletion. Architecture preference is not
+  a finding; a solution-fit finding that cannot name what the alternative
+  avoids is dropped.
 - Re-litigating a design decision the plan made deliberately and justified —
   unless you can show it's actually *wrong* (incorrect, unsafe, or rule-violating),
   not merely "I'd have done it differently."

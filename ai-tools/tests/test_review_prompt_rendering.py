@@ -26,6 +26,22 @@ class ReviewPromptTemplateDiscoveryTest(unittest.TestCase):
                     self.assertEqual(render_review_prompt.templates_dir(), templates)
 
 
+# Shared review concepts and the authored paths each must appear in. A marker
+# is a presence check, not a quality check: it catches a concept disappearing
+# from a path, not a shallow treatment surviving on one (the known blind spot —
+# reconcile depth by review, not by prose-length assertions).
+SHARED_CONCEPT_MARKERS = {
+    "producing mechanism": ("manual", "code", "plan"),
+    "subtractive": ("manual", "code", "plan"),
+    "round trips": ("manual", "code", "plan"),
+    "Unverified:": ("manual", "code", "plan"),
+    "event loop stalls": ("manual", "code", "plan"),
+    "tooltip": ("manual", "code", "plan"),
+    "presumptively": ("manual", "code", "plan"),
+    "risk ordered first": ("manual", "plan"),
+}
+
+
 class ReviewPromptRenderingTest(unittest.TestCase):
     def setUp(self) -> None:
         # These tests render from the external review-rubric skill. On a fresh
@@ -34,6 +50,26 @@ class ReviewPromptRenderingTest(unittest.TestCase):
             render_review_prompt.templates_dir()
         except FileNotFoundError:
             self.skipTest("review-rubric skill not installed locally")
+
+    def _authored_paths(self) -> dict[str, str]:
+        templates = render_review_prompt.templates_dir()
+        return {
+            "manual": (templates.parent / "manual.md").read_text(),
+            "code": (templates / "code-review.md").read_text(),
+            "plan": (templates / "plan-review.md").read_text(),
+        }
+
+    def test_shared_concepts_present_in_expected_authored_paths(self) -> None:
+        texts = self._authored_paths()
+        for marker, expected_paths in SHARED_CONCEPT_MARKERS.items():
+            for key in expected_paths:
+                self.assertIn(marker, texts[key], f"marker {marker!r} missing from the {key} path")
+
+    def test_no_positional_lens_references(self) -> None:
+        # Cross-references must use lens names, not numbers, so inserting a
+        # lens can never silently re-point them.
+        for key, text in self._authored_paths().items():
+            self.assertNotRegex(text, r"(?i)lens \d", f"positional lens reference in the {key} path")
 
     def test_code_and_plan_prompts_include_shared_rubric(self) -> None:
         code_prompt = render_review_prompt.render_prompt("code")

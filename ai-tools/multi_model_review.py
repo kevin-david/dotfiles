@@ -140,6 +140,9 @@ def env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+# Confidence is evidentiary-only (see the review-rubric templates): 50 admits
+# labelled `Unverified:` leads, and no threshold value filters by impact —
+# severity is reported, never used as a gate here.
 THRESHOLD = int(env("REVIEW_THRESHOLD", "50"))
 HEARTBEAT_SECS = int(env("REVIEW_HEARTBEAT_SECS", "30"))
 LANE_LABELS = {

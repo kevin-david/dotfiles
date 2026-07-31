@@ -70,7 +70,10 @@ Before judging the diff, externalize the model you used to review it:
   name each target's path and symbol in `inspected`, and name the search in
   `method`.
 - State coverage gaps honestly. An empty list means you found no material gap,
-  not that the field may be skipped.
+  not that the field may be skipped. A gap that carries a concrete failure
+  theory is a finding, not only a gap: emit it at confidence 50 with
+  `Unverified:` framing, and never assert the missing link as established
+  fact instead.
 - List the interacting components and each role. When the changed behavior spans
   at least three components, include a compact Mermaid `flowchart`; otherwise
   emit an empty Mermaid string. The diagram is review evidence, not decoration.
@@ -80,6 +83,42 @@ Before judging the diff, externalize the model you used to review it:
   precision checks; UI requires lifecycle checks; external integrations require
   schema, retry, and failure checks. Do not force irrelevant lenses.
 
+## Solution fit — judge the change before its correctness
+
+A correct implementation of the wrong change is still the wrong change, so
+ask these before the lenses below. Each row needs the named evidence; a row
+without it is a preference, not a finding. Identify the producing
+mechanism from the code, not from the change's own framing — the stated
+problem is a claim to verify, not a fact.
+
+| Ask | Finding when — fix | Finding when — feature | Evidence required |
+|---|---|---|---|
+| Does the change eliminate the producing mechanism? | Targets a symptom while the mechanism stays live | The requirement is assumed, or a proposed solution is restated as the need | Name the mechanism and the input that still reaches it |
+| Does this belong here? | The change sits in a component that lacks the state or authority the decision needs, so it duplicates, reconstructs, or guesses it | Same | Name the state needed and the component that already owns it |
+| Does it create a second authority or path? | Two mechanisms can now make the same decision under divergent rules | A second way to express an established concept | Name both paths and the input on which they can diverge |
+| Is there a smaller sufficient change? | An existing seam, unconditional rule, or deletion produces the required behavior with less state to synchronize | Same | Name the alternative and any required behavior it would fail to preserve. If none, name the callers and requirements checked |
+| Does it cover the whole cause? | The cause is correctly identified but addressed at one of several sites that reach it | The change serves one caller of a need shared by others it does not mention | Name the other reaching sites and confirm they are unfixed |
+
+### Subtractive check
+
+New code tends to get stacked on old. Require a concrete subtractive
+alternative, but do not treat addition, layering, or a flag as a finding by
+itself. When the producing mechanism is an existing optimization or
+special case, the candidate deletion is that mechanism itself — a patch at
+its consumers is not the subtractive option.
+
+| Ask | Finding when | Evidence required |
+|---|---|---|
+| Was a subtractive option weighed? | The change adds a mechanism where removing or relaxing an existing one — often an earlier optimization or special case — achieves the same outcome | Name the deletion and any required behavior it breaks. If none was found, name the inspected callers and consumers supporting that conclusion |
+| Replacement that only adds | The change describes itself as replacing behavior, but the old path remains reachable | Name the old path and the input that still reaches it |
+| Added layer or flag | A wrapper, adapter, or option creates a concrete sync burden, divergent result, or unnecessary supported state | Name the present cost or the input on which behavior diverges |
+| Superseded leftovers | Code the change obsoletes is left in place: unused function, unreachable branch, dead test | Name the dead symbol |
+
+When the repo documents a binding simplicity rule, cite it; do not elevate a
+preference without a concrete consequence. A "simplification" that changes
+observable behavior in a correctness-critical path is a behavior change, not
+a simplification — flag it as one.
+
 ## What to look for
 
 Use these lenses. Add your own classes of issue freely — this list is a floor,
@@ -87,7 +126,8 @@ not a ceiling.
 
 1. **Functional correctness / bugs.** Logic errors, off-by-one, wrong
    conditionals, broken invariants, races, resource leaks, mishandled edge
-   cases. Prioritize bugs that will actually be hit in practice.
+   cases, event loop stalls (synchronous I/O or heavy computation on the main
+   thread). Prioritize bugs that will actually be hit in practice.
 
 2. **Silent failures & wrong-answer fallbacks.** A lookup that misses and
    returns a plausible placeholder (`0`, `""`, `"unknown"`, a stale snapshot)
@@ -138,10 +178,29 @@ not a ceiling.
    nesting, and god functions/classes. Flag the smell, name it, and suggest the
    refactor — but only when it's worth the churn, not as dogma.
 
+8. **Configuration mismatches.** Features whose implementation contradicts
+   their user-facing documentation, tooltips, or schema.
+
+## Performance and cost
+
+State the input size or bound and the resulting count; "could be slow" with
+no named N is not a finding, and neither is a micro-optimization with no
+arithmetic or measured basis behind it. Where the repo states or implies both
+sides of a rate comparison, multiply them out and put both numbers in the
+finding.
+
+| Ask | Finding when | Evidence required |
+|---|---|---|
+| Complexity in the real N | Nested iteration or a lookup inside a loop over a collection that grows with real data | Name N, where it comes from, and an observed magnitude, configured bound, or defensible worst case |
+| Round trips | A query, RPC, or cache call inside a loop (N+1) | Count round trips per operation, before and after |
+| Persisted volume | Bytes written × frequency × retention grows without bound; a new key or stream has no TTL or cap | State the growth rate and the retention |
+| Bounded-buffer arithmetic | A bounded stream, cache, or buffer whose eviction rate is not matched to its write rate | State the inequality and which side the change lands on |
+| Repeated work | A value recomputed per item that is invariant within the batch | Name the invariant and the loop |
+
 ## Review the PR description too
 
-LLM-drafted PR descriptions run long — hold this one to the same bar as code
-comments (lens 5): why over what, no padding, no hedging. It isn't part of the
+LLM-drafted PR descriptions run long — hold this one to the same bar as the
+comment-and-prose-conciseness lens: why over what, no padding, no hedging. It isn't part of the
 diff, so it has no line to anchor to; put any feedback in the `description_notes`
 output field (**not** `findings`), quoting the bloated passage and giving the
 tighter rewrite. If it's already tight, or empty, say nothing — don't manufacture
@@ -172,7 +231,14 @@ correct as written:
 - Check whether a guard, type, invariant, or earlier validation elsewhere
   already makes your "bug" unreachable in practice.
 - For a claimed behavior change, find the concrete input that exhibits the
-  difference. If you can't construct one, you don't have a finding.
+  difference. If you cannot complete the failing trace, keep the candidate
+  only at confidence 50 when you have a concrete failure theory and can name
+  the single material link that remains unverified — prefix that gap with
+  `Unverified:` and state the outcome conditionally. Otherwise score it 25
+  and drop it. Never call a 50-level lead a regression. When a finding's core
+  is verified but a material extension is not, keep the earned confidence and
+  label the extension inline with `Unverified:` — reserve confidence 50 for
+  findings whose entire failure theory hinges on the unverified link.
 - **Before calling anything a regression, check what the code did *before* this
   PR** (`git diff {{BASE_SHA}}...HEAD`, or read the base version of the
   function). If the behavior you're flagging is identical pre- and post-diff,
@@ -182,20 +248,29 @@ correct as written:
   regression, and asserting one without checking the base is the most common way
   these reviews cry wolf.
 
-If the finding survives that refutation attempt, keep it. If it doesn't — or you
-couldn't build the failing case — drop it or score it down. Default to dropping
-when uncertain: a false positive that wastes a human's verification time costs
-more than a missed nitpick.
+If the finding survives that refutation attempt, keep it. An **unlabelled**
+claim presented as established is the expensive failure; a **labelled** lead
+carrying its own missing link is cheap and welcome. Drop what fails
+refutation or has no concrete failure theory — do not pad.
 
-Then score the confidence you *earned by surviving refutation* 0–100:
+Then score the confidence you *earned by surviving refutation* 0–100. This
+axis is evidentiary certainty only — impact lives in `severity`:
 
-- **0** — false positive under light scrutiny; doesn't hold up.
-- **25** — might be real, couldn't verify. Stylistic and not called out in
-  `AGENTS.md`.
-- **50** — verified real, but a nitpick or rare in practice.
-- **75** — verified, very likely hit in practice, or directly named in
-  `AGENTS.md`. The PR's current approach is insufficient.
-- **100** — certain, frequent in practice, evidence directly confirms it.
+- **0** — refuted under scrutiny; doesn't hold up.
+- **25** — plausible but unverified; or stylistic and not called out in
+  `AGENTS.md`. Drop it.
+- **50** — credible lead with a concrete failure theory, but one material
+  link remains unverified. The finding must say `Unverified:`, name the
+  missing check, and frame its title and body conditionally.
+- **75** — verified through concrete code and caller tracing, or directly
+  named in `AGENTS.md`.
+- **100** — directly proven or reproduced; evidence confirms it.
+
+`severity` carries impact, separately. A reachable silent wrong answer that
+can influence a correctness-critical decision — a stale value presented as
+fresh, a placeholder substituted for a failed lookup, one field standing in
+for a semantically different one — is presumptively **Critical**. Downgrade
+only with evidence that limits its reachability or impact.
 
 **Only report findings scoring ≥ {{THRESHOLD}}.** If nothing clears the bar,
 say "No issues found" and stop. Do not pad the report to look thorough.
@@ -226,7 +301,11 @@ never leak into the assessment or the strengths list.
 - Anything a linter / type-checker / compiler / CI would catch (imports, type
   errors, formatting, broken tests). **Do not** run build/lint/typecheck — CI
   does that separately; it's not your job.
-- Pedantic nitpicks a senior engineer wouldn't raise.
+- Pedantic nitpicks a senior engineer wouldn't raise, regardless of score.
+- "I would have designed it differently," with no named failure, cost,
+  duplicated authority, or specific deletion. Architecture preference is not
+  a finding; a solution-fit finding that cannot name what the alternative
+  avoids is dropped.
 - Intentional functional changes that are the point of the PR.
 - General "could use more tests / docs" hand-waving not tied to a concrete gap.
 
