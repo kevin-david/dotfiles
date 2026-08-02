@@ -164,11 +164,10 @@ LANE_EFFORTS = {
 
 
 SEVERITY_RANK = {"Critical": 0, "Important": 1, "Suggestion": 2}
-# Minimum backticked references in a lane's `method` section that must resolve
-# to a real file or symbol in the review worktree. Proof-of-work: a review that
-# actually traced code names real paths and functions; boilerplate ("read the
-# diff, checked for bugs") doesn't, and its no-findings verdict is not evidence.
-HOLLOW_METHOD_MIN_REFS = 2
+# Minimum structured inspection references that must resolve to a real file or
+# symbol in the review worktree. Formatting in the prose `method` is not proof;
+# the machine-readable paths and symbols are.
+HOLLOW_INSPECTION_MIN_REFS = 2
 # Every section the prompt forces a reviewer to emit. A block missing any of
 # these didn't do the work — the lane is flagged incomplete and its verdict
 # discounted, rather than silently trusted as a clean pass.
@@ -338,8 +337,7 @@ def _claude_model_unavailable(result: CompletedProcess[str]) -> bool:
     response = f"{result.stdout}\n{result.stderr}".lower()
     reached_limit = "reached your" in response and " limit" in response
     missing_model = "model" in response and any(
-        marker in response
-        for marker in ("not available", "unavailable", "not found", "unknown model")
+        marker in response for marker in ("not available", "unavailable", "not found", "unknown model")
     )
     return reached_limit or missing_model
 
@@ -349,11 +347,8 @@ def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
     primary = run(_claude_command(prompt, primary_model), cwd=wt)
     attempts = [(primary_model, primary)]
 
-    if _claude_model_unavailable(primary) and CLAUDE_FALLBACK_MODEL != primary_model:
-        print(
-            f"[claude] {primary_model or 'default'} unavailable; "
-            f"retrying once with {CLAUDE_FALLBACK_MODEL}"
-        )
+    if _claude_model_unavailable(primary) and primary_model != CLAUDE_FALLBACK_MODEL:
+        print(f"[claude] {primary_model or 'default'} unavailable; retrying once with {CLAUDE_FALLBACK_MODEL}")
         fallback = run(_claude_command(prompt, CLAUDE_FALLBACK_MODEL), cwd=wt)
         attempts.append((CLAUDE_FALLBACK_MODEL, fallback))
         if not _claude_model_unavailable(fallback):
@@ -375,8 +370,7 @@ def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
         )
 
     error_log = "\n\n".join(
-        f"[{model or 'default'}]\n"
-        f"{attempt.stderr or (attempt.stdout if _claude_model_unavailable(attempt) else '')}"
+        f"[{model or 'default'}]\n{attempt.stderr or (attempt.stdout if _claude_model_unavailable(attempt) else '')}"
         for model, attempt in attempts
     )
     (out / "claude.err").write_text(error_log)
@@ -414,9 +408,22 @@ def lane_antigravity(prompt: str, wt: str, out: Path) -> LaneResult:
     worktree = Path(wt).resolve()
     expected_head = run_ok(["git", "-C", str(worktree), "rev-parse", "HEAD"]).strip()
     provenance_cmd = f"git -C {shlex.quote(str(worktree))} rev-parse HEAD"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix=".multi-review-antigravity-",
+        suffix=".md",
+        dir=worktree,
+        delete=False,
+    ) as instruction_file:
+        instruction_path = Path(instruction_file.name)
     grounded_prompt = f"""\
 Antigravity execution boundary:
 - The checked-out review worktree is exactly `{worktree}`.
+- The complete review contract is stored at `{instruction_path}`.
+- If a context checkpoint truncates this request or points you to a conversation
+  transcript, reread `{instruction_path}` instead. Never read or search Antigravity
+  CLI transcripts, logs, or scratch state.
 - Before inspecting anything, run exactly: `{provenance_cmd}`
 - That first tool call must contain only that command. Do not append, redirect,
   pipe, or combine it with another command.
@@ -425,6 +432,10 @@ Antigravity execution boundary:
   repository files under that path. Do not use a similarly named checkout in the
   Antigravity scratch directory.
 - Do not copy or redirect the diff or any repository file into a scratch directory.
+- Inventory the changed paths before reading the full diff. For every changed
+  top-level directory, inspect at least one changed implementation path there or
+  name that exact directory in `coverage_gaps`. Do not claim behavior for an
+  uninspected surface.
 
 {prompt}
 
@@ -433,57 +444,61 @@ Antigravity final-output override:
 - Return only the JSON object required by that schema.
 - Do not emit the `<<<REVIEW_JSON` / `REVIEW_JSON>>>` wrapper requested above.
 """
+    instruction_path.write_text(grounded_prompt)
     schema = json.dumps(ANTIGRAVITY_REVIEW_SCHEMA, separators=(",", ":"))
-    for attempt in (1, 2):
-        attempt_prompt = grounded_prompt
-        if attempt == 2:
-            attempt_prompt += (
-                "\nThis is a fresh retry after the prior model generation timed out. "
-                "Inspect concisely, then emit the schema-constrained result once. "
-                "Do not repeat filler or status words.\n"
+    try:
+        for attempt in (1, 2):
+            attempt_prompt = grounded_prompt
+            if attempt == 2:
+                attempt_prompt += (
+                    "\nThis is a fresh retry after the prior model generation timed out. "
+                    "Inspect concisely, then emit the schema-constrained result once. "
+                    "Do not repeat filler or status words.\n"
+                )
+            cmd = [
+                "agy",
+                "-p",
+                attempt_prompt,
+                "--dangerously-skip-permissions",
+                "--output-format",
+                "stream-json",
+                "--json-schema",
+                schema,
+                "--print-timeout",
+                "10m",
+            ]
+            if LANE_MODELS["antigravity"]:
+                cmd += ["--model", LANE_MODELS["antigravity"]]
+            p = run(cmd, cwd=wt)
+            if attempt == 1 and _antigravity_retryable_error(p.stdout) is not None:
+                (out / "antigravity.attempt1.stream.jsonl").write_text(p.stdout)
+                (out / "antigravity.attempt1.err").write_text(p.stderr)
+                print("[antigravity] generation timed out; retrying once with a fresh conversation")
+                continue
+
+            (out / "antigravity.stream.jsonl").write_text(p.stdout)
+            response, stream_error = _parse_antigravity_stream(
+                p.stdout,
+                worktree=worktree,
+                provenance_cmd=provenance_cmd,
+                expected_head=expected_head,
             )
-        cmd = [
-            "agy",
-            "-p",
-            attempt_prompt,
-            "--dangerously-skip-permissions",
-            "--output-format",
-            "stream-json",
-            "--json-schema",
-            schema,
-            "--print-timeout",
-            "10m",
-        ]
-        if LANE_MODELS["antigravity"]:
-            cmd += ["--model", LANE_MODELS["antigravity"]]
-        p = run(cmd, cwd=wt)
-        if attempt == 1 and _antigravity_retryable_error(p.stdout) is not None:
-            (out / "antigravity.attempt1.stream.jsonl").write_text(p.stdout)
-            (out / "antigravity.attempt1.err").write_text(p.stderr)
-            print("[antigravity] generation timed out; retrying once with a fresh conversation")
-            continue
+            errors = [part for part in (p.stderr.strip(), stream_error) if part]
+            if p.returncode != 0 and not errors:
+                errors.append(f"agy exited {p.returncode} without a structured error")
+            if errors:
+                err = "\n".join(errors)
+                (out / "antigravity.err").write_text(err)
+                return LaneResult("", p.returncode or 1, err)
+            wrapped = f"{SENTINEL_OPEN}\n{response}\n{SENTINEL_CLOSE}"
+            (out / "antigravity.err").write_text("")
+            return LaneResult(wrapped, 0, "")
 
-        (out / "antigravity.stream.jsonl").write_text(p.stdout)
-        response, stream_error = _parse_antigravity_stream(
-            p.stdout,
-            worktree=worktree,
-            provenance_cmd=provenance_cmd,
-            expected_head=expected_head,
-        )
-        errors = [part for part in (p.stderr.strip(), stream_error) if part]
-        if p.returncode != 0 and not errors:
-            errors.append(f"agy exited {p.returncode} without a structured error")
-        if errors:
-            err = "\n".join(errors)
-            (out / "antigravity.err").write_text(err)
-            return LaneResult("", p.returncode or 1, err)
-        wrapped = f"{SENTINEL_OPEN}\n{response}\n{SENTINEL_CLOSE}"
-        (out / "antigravity.err").write_text("")
-        return LaneResult(wrapped, 0, "")
-
-    err = "Antigravity lane exhausted its generation retry without a result."
-    (out / "antigravity.err").write_text(err)
-    return LaneResult("", 1, err)
+        err = "Antigravity lane exhausted its generation retry without a result."
+        (out / "antigravity.err").write_text(err)
+        return LaneResult("", 1, err)
+    finally:
+        instruction_path.unlink(missing_ok=True)
 
 
 def _antigravity_retryable_error(raw: str) -> str | None:
@@ -639,13 +654,19 @@ def extract_findings(raw: str) -> LaneReview | None:
     return reviews[-1] if reviews else None
 
 
-def review_contract_issues(data: Mapping[str, object], repo_files: set[str]) -> list[str]:
+def review_contract_issues(
+    data: Mapping[str, object],
+    repo_files: set[str],
+    *,
+    changed_files: set[str] | None = None,
+) -> list[str]:
     issues: list[str] = []
     if not isinstance(data.get("behavioral_delta"), str) or not str(data["behavioral_delta"]).strip():
         issues.append("behavioral_delta must be non-empty")
 
     inspected = data.get("inspected")
     targets: set[tuple[str, str]] = set()
+    inspected_paths: set[str] = set()
     unknown_paths: set[str] = set()
     if not isinstance(inspected, list):
         issues.append("inspected must be an array")
@@ -657,6 +678,7 @@ def review_contract_issues(data: Mapping[str, object], repo_files: set[str]) -> 
             symbols = item.get("symbols")
             conclusion = item.get("conclusion")
             if isinstance(path, str):
+                inspected_paths.add(path)
                 if path not in repo_files:
                     unknown_paths.add(path)
                 if isinstance(symbols, list):
@@ -671,6 +693,16 @@ def review_contract_issues(data: Mapping[str, object], repo_files: set[str]) -> 
     coverage_gaps = data.get("coverage_gaps")
     if not isinstance(coverage_gaps, list) or not all(isinstance(gap, str) for gap in coverage_gaps):
         issues.append("coverage_gaps must be an array")
+    elif changed_files:
+        changed_roots = {path.split("/", 1)[0] for path in changed_files if "/" in path}
+        inspected_roots = {path.split("/", 1)[0] for path in inspected_paths if "/" in path}
+        gap_strings = [gap for gap in coverage_gaps if isinstance(gap, str)]
+        gap_tokens = {token.lower() for gap in gap_strings for token in re.findall(r"[A-Za-z0-9_.-]+", gap)}
+        unaccounted_roots = sorted(root for root in changed_roots - inspected_roots if root.lower() not in gap_tokens)
+        if unaccounted_roots:
+            issues.append(
+                "changed top-level directories lack inspection or coverage gap: " + ", ".join(unaccounted_roots)
+            )
 
     change_map = data.get("change_map")
     if not isinstance(change_map, dict):
@@ -803,19 +835,26 @@ def diff_commentable_lines(base: Sha, head: Sha) -> dict[str, set[int]]:
     return files
 
 
-def count_real_refs(method: str, worktree: Path) -> int:
-    """Distinct backticked references in a method section that resolve to a real
-    file path or a symbol greppable in the review worktree."""
-    hits = 0
-    for ref in {r.strip() for r in re.findall(r"`([^`\n]{1,200})`", method)}:
-        base = ref.split(":", 1)[0]
-        if base and not base.startswith("/") and (worktree / base).exists():
-            hits += 1
+def count_real_inspected_refs(raw: object, worktree: Path) -> int:
+    """Count distinct structured paths and symbols that exist in the worktree."""
+    hits: set[tuple[str, str]] = set()
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
             continue
-        name = re.sub(r"\(.*\)$", "", ref).rsplit(".", 1)[-1].strip()
-        if re.fullmatch(r"\w+", name) and run(["git", "-C", str(worktree), "grep", "-q", "-F", name]).returncode == 0:
-            hits += 1
-    return hits
+        path = item.get("path")
+        if not isinstance(path, str) or not (worktree / path).is_file():
+            continue
+        hits.add((path, ""))
+        symbols = item.get("symbols")
+        for symbol in symbols if isinstance(symbols, list) else []:
+            if not isinstance(symbol, str):
+                continue
+            name = re.sub(r"\(.*\)$", "", symbol).rsplit(".", 1)[-1].strip()
+            if re.fullmatch(r"\w+", name):
+                command = ["git", "-C", str(worktree), "grep", "-q", "-F", name, "--", path]
+                if run(command).returncode == 0:
+                    hits.add((path, name))
+    return len(hits)
 
 
 def post_inline(slug: str, pr: str, head: Sha, f: Finding, body: str, line: int) -> CompletedProcess[str]:
@@ -874,9 +913,9 @@ def process_lane(lane: str, res: LaneResult, ctx: ReviewCtx, out: Path) -> None:
     incomplete_reasons: list[str] = []
     if missing:
         incomplete_reasons.append(f"missing section(s): {', '.join(missing)}")
-    elif (refs := count_real_refs(data.get("method", ""), ctx.worktree)) < HOLLOW_METHOD_MIN_REFS:
-        incomplete_reasons.append(f"hollow method: {refs} verifiable reference(s)")
-    contract_issues = review_contract_issues(data, ctx.repo_files)
+    elif (refs := count_real_inspected_refs(data.get("inspected"), ctx.worktree)) < HOLLOW_INSPECTION_MIN_REFS:
+        incomplete_reasons.append(f"hollow inspection: {refs} verifiable reference(s)")
+    contract_issues = review_contract_issues(data, ctx.repo_files, changed_files=set(ctx.diff_lines))
     if contract_issues:
         incomplete_reasons.append(f"contract: {'; '.join(contract_issues)}")
     findings, unlabelled_leads = partition_findings(data.get("findings", []), THRESHOLD)
@@ -1022,7 +1061,8 @@ def collect_review_overviews(lanes: list[str], results: dict[str, LaneResult], c
         data = extract_findings(results[lane].out)
         if data is None or any(key not in data for key in REQUIRED_KEYS):
             continue
-        if not review_contract_issues(data, ctx.repo_files):
+        enough_inspection = count_real_inspected_refs(data.get("inspected"), ctx.worktree) >= HOLLOW_INSPECTION_MIN_REFS
+        if enough_inspection and not review_contract_issues(data, ctx.repo_files, changed_files=set(ctx.diff_lines)):
             ctx.review_overviews.append((lane, data))
 
 

@@ -84,13 +84,15 @@ class LaneConfigurationTest(unittest.TestCase):
             stderr="",
         )
 
-        with tempfile.TemporaryDirectory() as td:
-            with patch.object(
+        with (
+            tempfile.TemporaryDirectory() as td,
+            patch.object(
                 multi_model_review,
                 "run",
                 side_effect=(unavailable, unavailable),
-            ):
-                result = multi_model_review.lane_claude("prompt", td, Path(td))
+            ),
+        ):
+            result = multi_model_review.lane_claude("prompt", td, Path(td))
 
         self.assertEqual(result.code, 1)
         self.assertEqual(result.out, "")
@@ -104,13 +106,15 @@ class LaneConfigurationTest(unittest.TestCase):
             stderr="authentication failed",
         )
 
-        with tempfile.TemporaryDirectory() as td:
-            with patch.object(
+        with (
+            tempfile.TemporaryDirectory() as td,
+            patch.object(
                 multi_model_review,
                 "run",
                 return_value=auth_failure,
-            ) as run:
-                result = multi_model_review.lane_claude("prompt", td, Path(td))
+            ) as run,
+        ):
+            result = multi_model_review.lane_claude("prompt", td, Path(td))
 
         self.assertEqual(result, multi_model_review.LaneResult("", 1, "authentication failed"))
         self.assertEqual(run.call_count, 1)
@@ -119,21 +123,19 @@ class LaneConfigurationTest(unittest.TestCase):
         review = CompletedProcess(
             args=[],
             returncode=0,
-            stdout=(
-                "<<<REVIEW_JSON\n"
-                '{"assessment": "The API reached your configured limit."}\n'
-                "REVIEW_JSON>>>"
-            ),
+            stdout=('<<<REVIEW_JSON\n{"assessment": "The API reached your configured limit."}\nREVIEW_JSON>>>'),
             stderr="",
         )
 
-        with tempfile.TemporaryDirectory() as td:
-            with patch.object(
+        with (
+            tempfile.TemporaryDirectory() as td,
+            patch.object(
                 multi_model_review,
                 "run",
                 return_value=review,
-            ) as run:
-                result = multi_model_review.lane_claude("prompt", td, Path(td))
+            ) as run,
+        ):
+            result = multi_model_review.lane_claude("prompt", td, Path(td))
 
         self.assertEqual(result.out, review.stdout)
         self.assertEqual(run.call_count, 1)
@@ -213,6 +215,80 @@ class LaneConfigurationTest(unittest.TestCase):
         grounded_prompt = agy_cmd[agy_cmd.index("-p") + 1]
         self.assertIn(str(worktree), grounded_prompt)
         self.assertIn(expected_head, grounded_prompt)
+
+    def test_antigravity_keeps_checkpoint_recovery_in_the_review_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            worktree = root / "review"
+            worktree.mkdir()
+            out = root / "out"
+            out.mkdir()
+            expected_head = "a" * 40
+            provenance_cmd = f"git -C {worktree} rev-parse HEAD"
+            review = {
+                "eligible": True,
+                "behavioral_delta": "Changes behavior.",
+                "inspected": [],
+                "coverage_gaps": ["Not inspected."],
+                "change_map": {"components": [], "mermaid": ""},
+                "method": "Inspected the diff.",
+                "assessment": "incomplete",
+                "strengths": [],
+                "description_notes": [],
+                "findings": [],
+            }
+            stream = "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "event": "step_update",
+                            "step_update": {
+                                "state": "DONE",
+                                "tool_info": {
+                                    "name": "run_command",
+                                    "parameters": {"CommandLine": provenance_cmd},
+                                    "output": expected_head,
+                                },
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "event": "result",
+                            "result": {
+                                "status": "SUCCESS",
+                                "structured_output": review,
+                            },
+                        }
+                    ),
+                ]
+            )
+            calls = 0
+
+            def run(cmd: list[str], **_kwargs: object) -> CompletedProcess[str]:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return CompletedProcess(args=cmd, returncode=0, stdout=f"{expected_head}\n", stderr="")
+
+                instruction_files = list(worktree.glob(".multi-review-antigravity-*.md"))
+                self.assertEqual(len(instruction_files), 1)
+                instructions = instruction_files[0].read_text()
+                self.assertIn("checkpoint recovery contract marker", instructions)
+                self.assertIn(str(instruction_files[0]), cmd[cmd.index("-p") + 1])
+                self.assertIn("transcript", instructions.lower())
+                self.assertIn("For every changed", instructions)
+                self.assertIn("top-level directory", instructions)
+                return CompletedProcess(args=cmd, returncode=0, stdout=stream, stderr="")
+
+            with (
+                patch.object(multi_model_review, "run", side_effect=run),
+                patch.dict(multi_model_review.LANE_MODELS, {"antigravity": ""}),
+            ):
+                result = multi_model_review.lane_antigravity("checkpoint recovery contract marker", str(worktree), out)
+
+            self.assertEqual(result.code, 0)
+            self.assertEqual(list(worktree.glob(".multi-review-antigravity-*.md")), [])
 
     def test_antigravity_retries_a_structured_generation_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as td:

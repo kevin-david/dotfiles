@@ -1,4 +1,4 @@
-"""Mechanical hollow-method check: a lane's method section must name real code."""
+"""Mechanical proof check: a lane's structured inspection must name real code."""
 
 import json
 import subprocess
@@ -33,14 +33,18 @@ def make_ctx(wt: Path) -> mmr.ReviewCtx:
     )
 
 
-def lane_output(method: str | None) -> str:
+def lane_output(method: str | None, symbols: list[str] | None = None) -> str:
     # Every section other than `method` is contract-valid, so only the
     # hollow-method dimension varies across these tests.
     data: dict = {
         "eligible": True,
         "behavioral_delta": "frobnicate now returns 1",
         "inspected": [
-            {"path": "svc/thing.py", "symbols": ["frobnicate", "thing"], "conclusion": "traced"},
+            {
+                "path": "svc/thing.py",
+                "symbols": symbols or ["frobnicate", "thing"],
+                "conclusion": "traced",
+            },
         ],
         "coverage_gaps": [],
         "change_map": {
@@ -59,25 +63,29 @@ def lane_output(method: str | None) -> str:
 
 def test_concrete_method_passes(tmp_path):
     wt = make_worktree(tmp_path)
-    assert mmr.count_real_refs("I traced `svc/thing.py` and `frobnicate()` callers.", wt) == 2
     ctx = make_ctx(wt)
     res = mmr.LaneResult(lane_output("Traced `svc/thing.py` and `frobnicate()` down-stack."), 0, "")
     mmr.process_lane("claude", res, ctx, tmp_path)
     assert ctx.incomplete == []
 
 
-def test_hollow_method_marked_incomplete(tmp_path):
+def test_plain_method_passes_when_structured_inspection_is_verifiable(tmp_path):
     wt = make_worktree(tmp_path)
     ctx = make_ctx(wt)
     res = mmr.LaneResult(lane_output("Read the diff carefully and checked for bugs."), 0, "")
     mmr.process_lane("claude", res, ctx, tmp_path)
-    assert len(ctx.incomplete) == 1
-    assert "hollow method" in ctx.incomplete[0]
+    assert ctx.incomplete == []
 
 
-def test_symbol_must_exist_to_count(tmp_path):
+def test_structured_symbol_must_exist_to_count(tmp_path):
     wt = make_worktree(tmp_path)
-    assert mmr.count_real_refs("Checked `totally_fake_symbol_xyz` in `not/a/file.py`.", wt) == 0
+    inspected = [{"path": "svc/thing.py", "symbols": ["totally_fake_symbol_xyz"]}]
+    assert mmr.count_real_inspected_refs(inspected, wt) == 1
+
+    ctx = make_ctx(wt)
+    res = mmr.LaneResult(lane_output("Checked the implementation.", ["fake_one", "fake_two"]), 0, "")
+    mmr.process_lane("claude", res, ctx, tmp_path)
+    assert "hollow inspection" in ctx.incomplete[0]
 
 
 def test_missing_method_still_incomplete(tmp_path):

@@ -83,6 +83,27 @@ REVIEW_JSON>>>
         self.assertIn("inspected paths not in worktree: missing.py", issues)
         self.assertIn("inspected must name at least 2 verifiable file/symbol targets", issues)
 
+    def test_changed_top_level_directories_need_inspection_or_an_explicit_gap(self) -> None:
+        review = self.valid_review()
+        changed_files = {"src/service.py", "dashboard/app.tsx", "pyproject.toml"}
+
+        issues = multi_model_review.review_contract_issues(
+            review,
+            changed_files,
+            changed_files=changed_files,
+        )
+
+        self.assertIn("changed top-level directories lack inspection or coverage gap: dashboard", issues)
+
+        review["coverage_gaps"] = ["dashboard behavior was not inspected."]
+        issues = multi_model_review.review_contract_issues(
+            review,
+            changed_files,
+            changed_files=changed_files,
+        )
+
+        self.assertNotIn("changed top-level directories lack inspection or coverage gap: dashboard", issues)
+
     def test_overview_uses_one_map_and_combines_coverage_gaps(self) -> None:
         first = self.valid_review()
         first["coverage_gaps"] = ["Did not exercise the external API."]
