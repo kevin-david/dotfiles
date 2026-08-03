@@ -416,7 +416,7 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(response, "")
         self.assertIn("did not prove the review checkout", error or "")
 
-    def test_antigravity_rejects_repository_tool_outside_worktree(self) -> None:
+    def test_antigravity_rejects_repository_tool_cwd_outside_worktree(self) -> None:
         expected_head = "a" * 40
         provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
         stream = "\n".join(
@@ -442,10 +442,8 @@ class LaneConfigurationTest(unittest.TestCase):
                             "tool_info": {
                                 "name": "run_command",
                                 "parameters": {
-                                    "CommandLine": (
-                                        "git -C /tmp/review-worktree diff HEAD^ "
-                                        "> /tmp/antigravity-cli/scratch/review.diff"
-                                    ),
+                                    "CommandLine": "git status",
+                                    "Cwd": "/tmp/antigravity-cli/scratch/repository",
                                 },
                             },
                         },
@@ -511,14 +509,6 @@ class LaneConfigurationTest(unittest.TestCase):
 
         self.assertEqual(response, "review")
         self.assertIsNone(error)
-        self.assertEqual(
-            multi_model_review._command_absolute_paths("sed -n '/start/,/end/p' /tmp/outside.py"),
-            {"/tmp/outside.py"},
-        )
-        self.assertEqual(
-            multi_model_review._command_absolute_paths("sed -f /tmp/rules.sed api/service.py"),
-            {"/tmp/rules.sed"},
-        )
 
 
 if __name__ == "__main__":

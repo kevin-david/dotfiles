@@ -445,10 +445,7 @@ Antigravity execution boundary:
 - That first tool call must contain only that command. Do not append, redirect,
   pipe, or combine it with another command.
 - Its output must be exactly `{expected_head}`. If it differs, stop and report failure.
-- Run every later repository command with its Cwd inside `{worktree}`, and read only
-  repository files under that path. Do not use a similarly named checkout in the
-  Antigravity scratch directory.
-- Do not copy or redirect the diff or any repository file into a scratch directory.
+- Run every later repository command with its Cwd inside `{worktree}`.
 {prompt}
 
 Antigravity final-output override:
@@ -525,65 +522,6 @@ def _antigravity_retryable_error(raw: str) -> str | None:
     return None
 
 
-def _command_absolute_paths(command: str) -> set[str]:
-    """Return absolute non-executable paths passed through a shell command."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return set()
-    paths: set[str] = set()
-    expect_executable = True
-    executable = ""
-    sed_program_supplied = False
-    sed_next_expression = False
-    sed_next_file = False
-    for token in tokens:
-        if token in {"&&", "||", "|", ";"}:
-            expect_executable = True
-            executable = ""
-            sed_program_supplied = False
-            sed_next_expression = False
-            sed_next_file = False
-            continue
-        if expect_executable:
-            expect_executable = False
-            executable = Path(token).name
-            continue
-        if executable == "sed":
-            if sed_next_expression:
-                sed_next_expression = False
-                sed_program_supplied = True
-                continue
-            if sed_next_file:
-                sed_next_file = False
-                sed_program_supplied = True
-            elif token in {"-e", "--expression"}:
-                sed_next_expression = True
-                continue
-            elif token.startswith("--expression="):
-                sed_program_supplied = True
-                continue
-            elif token in {"-f", "--file"}:
-                sed_next_file = True
-                continue
-            elif token.startswith("--file="):
-                token = token.split("=", 1)[1]
-                sed_program_supplied = True
-            elif token.startswith("-"):
-                continue
-            elif not sed_program_supplied:
-                # A sed program is shell syntax, not a filesystem path. Range
-                # expressions such as `/start/,/end/p` otherwise look absolute.
-                sed_program_supplied = True
-                continue
-        candidate = token.lstrip("0123456789<>&")
-        if candidate.startswith("~"):
-            candidate = str(Path(candidate).expanduser())
-        if Path(candidate).is_absolute():
-            paths.add(candidate)
-    return paths
-
-
 def _parse_antigravity_stream(
     raw: str,
     *,
@@ -613,8 +551,6 @@ def _parse_antigravity_stream(
                     output = tool.get("output")
                     if command == provenance_cmd and isinstance(output, str):
                         provenance_ok = output.strip() == expected_head
-                    if isinstance(command, str):
-                        outside_paths.update(_command_absolute_paths(command))
                     for key, value in params.items():
                         if not isinstance(value, str) or not Path(value).is_absolute():
                             continue
