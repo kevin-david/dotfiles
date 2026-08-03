@@ -278,6 +278,21 @@ def tag_for(lane: str) -> str:
 
 
 # --- prompt ------------------------------------------------------------------
+_CHANGED_ROOT_COVERAGE_INSTRUCTION = """
+
+Multi-review coverage contract:
+- Inventory the changed paths before reading the full diff. For every changed top-level directory,
+  inspect at least one changed path there or name that exact directory in `coverage_gaps`.
+  Do not claim behavior for an uninspected surface.
+"""
+
+
+def _with_changed_root_coverage_instruction(prompt: str) -> str:
+    if "For every changed top-level directory" in prompt:
+        return prompt
+    return prompt + _CHANGED_ROOT_COVERAGE_INSTRUCTION
+
+
 def render_prompt(template: str, *, base: Sha, slug: str, head: Sha, pr: str, body: str) -> str:
     repl = {
         "{{BASE_SHA}}": base,
@@ -290,7 +305,8 @@ def render_prompt(template: str, *, base: Sha, slug: str, head: Sha, pr: str, bo
         template = template.replace(k, v)
     # PR_BODY last: its text is author-controlled and may itself contain a
     # `{{...}}` token, so substitute it after every real token is resolved.
-    return template.replace("{{PR_BODY}}", body.strip() or "(no description)")
+    rendered = template.replace("{{PR_BODY}}", body.strip() or "(no description)")
+    return _with_changed_root_coverage_instruction(rendered)
 
 
 def load_prompt_template(prompt_path: Path | None, review_kind: str) -> str:
@@ -406,6 +422,7 @@ def lane_antigravity(prompt: str, wt: str, out: Path) -> LaneResult:
     # so it downgrades to default approval and refuses tool calls headlessly.
     # --dangerously-skip-permissions bypasses approval prompts.
     worktree = Path(wt).resolve()
+    prompt = _with_changed_root_coverage_instruction(prompt)
     expected_head = run_ok(["git", "-C", str(worktree), "rev-parse", "HEAD"]).strip()
     provenance_cmd = f"git -C {shlex.quote(str(worktree))} rev-parse HEAD"
     with tempfile.NamedTemporaryFile(
@@ -432,11 +449,6 @@ Antigravity execution boundary:
   repository files under that path. Do not use a similarly named checkout in the
   Antigravity scratch directory.
 - Do not copy or redirect the diff or any repository file into a scratch directory.
-- Inventory the changed paths before reading the full diff. For every changed
-  top-level directory, inspect at least one changed implementation path there or
-  name that exact directory in `coverage_gaps`. Do not claim behavior for an
-  uninspected surface.
-
 {prompt}
 
 Antigravity final-output override:
@@ -521,13 +533,49 @@ def _command_absolute_paths(command: str) -> set[str]:
         return set()
     paths: set[str] = set()
     expect_executable = True
+    executable = ""
+    sed_program_supplied = False
+    sed_next_expression = False
+    sed_next_file = False
     for token in tokens:
         if token in {"&&", "||", "|", ";"}:
             expect_executable = True
+            executable = ""
+            sed_program_supplied = False
+            sed_next_expression = False
+            sed_next_file = False
             continue
         if expect_executable:
             expect_executable = False
+            executable = Path(token).name
             continue
+        if executable == "sed":
+            if sed_next_expression:
+                sed_next_expression = False
+                sed_program_supplied = True
+                continue
+            if sed_next_file:
+                sed_next_file = False
+                sed_program_supplied = True
+            elif token in {"-e", "--expression"}:
+                sed_next_expression = True
+                continue
+            elif token.startswith("--expression="):
+                sed_program_supplied = True
+                continue
+            elif token in {"-f", "--file"}:
+                sed_next_file = True
+                continue
+            elif token.startswith("--file="):
+                token = token.split("=", 1)[1]
+                sed_program_supplied = True
+            elif token.startswith("-"):
+                continue
+            elif not sed_program_supplied:
+                # A sed program is shell syntax, not a filesystem path. Range
+                # expressions such as `/start/,/end/p` otherwise look absolute.
+                sed_program_supplied = True
+                continue
         candidate = token.lstrip("0123456789<>&")
         if candidate.startswith("~"):
             candidate = str(Path(candidate).expanduser())

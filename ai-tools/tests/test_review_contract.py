@@ -53,6 +53,19 @@ class ReviewContractTest(unittest.TestCase):
             self.assertIsNotNone(sample)
             self.assertFalse(set(multi_model_review.REQUIRED_KEYS) - set(sample or {}))
 
+    def test_rendered_prompt_states_changed_root_coverage_contract(self) -> None:
+        prompt = multi_model_review.render_prompt(
+            "Review {{REPO_SLUG}} at {{HEAD_SHA}} against {{BASE_SHA}}. {{PR_BODY}}",
+            base=multi_model_review.Sha("a" * 40),
+            slug="owner/repo",
+            head=multi_model_review.Sha("b" * 40),
+            pr="1",
+            body="Description",
+        )
+
+        self.assertIn("every changed top-level directory", prompt)
+        self.assertIn("name that exact directory in `coverage_gaps`", prompt)
+
     def test_extract_findings_uses_complete_retry_after_abandoned_block(self) -> None:
         raw = """<<<REVIEW_JSON
 {"assessment": "incomplete
