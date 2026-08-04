@@ -554,7 +554,8 @@ def _parse_antigravity_stream(
                     for key, value in params.items():
                         if not isinstance(value, str) or not Path(value).is_absolute():
                             continue
-                        if key.lower() not in {
+                        normalized_key = key.lower()
+                        if normalized_key not in {
                             "absolutepath",
                             "cwd",
                             "path",
@@ -562,8 +563,13 @@ def _parse_antigravity_stream(
                             "searchpath",
                         }:
                             continue
+                        resolved_path = Path(value).resolve()
+                        if normalized_key in {"absolutepath", "path"} and _path_is_within(
+                            resolved_path, Path(tempfile.gettempdir()).resolve()
+                        ):
+                            continue
                         try:
-                            Path(value).resolve().relative_to(worktree)
+                            resolved_path.relative_to(worktree)
                         except ValueError:
                             outside_paths.add(value)
         result = event.get("result")

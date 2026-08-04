@@ -463,6 +463,94 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(response, "")
         self.assertIn("escaped the review worktree", error or "")
 
+    def test_antigravity_allows_scratch_file_in_system_temp_directory(self) -> None:
+        expected_head = "a" * 40
+        provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
+        stream = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "run_command",
+                                "parameters": {"CommandLine": provenance_cmd},
+                                "output": expected_head,
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "view_file",
+                                "parameters": {"AbsolutePath": "/tmp/old_rfq_read_service.py"},
+                            },
+                        },
+                    }
+                ),
+                json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "review"}}),
+            ]
+        )
+
+        response, error = multi_model_review._parse_antigravity_stream(
+            stream,
+            worktree=Path("/tmp/review-worktree"),
+            provenance_cmd=provenance_cmd,
+            expected_head=expected_head,
+        )
+
+        self.assertEqual(response, "review")
+        self.assertIsNone(error)
+
+    def test_antigravity_rejects_file_outside_worktree_and_system_temp_directory(self) -> None:
+        expected_head = "a" * 40
+        provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
+        stream = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "run_command",
+                                "parameters": {"CommandLine": provenance_cmd},
+                                "output": expected_head,
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "view_file",
+                                "parameters": {"AbsolutePath": "/opt/unrelated-checkout/service.py"},
+                            },
+                        },
+                    }
+                ),
+                json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "review"}}),
+            ]
+        )
+
+        response, error = multi_model_review._parse_antigravity_stream(
+            stream,
+            worktree=Path("/tmp/review-worktree"),
+            provenance_cmd=provenance_cmd,
+            expected_head=expected_head,
+        )
+
+        self.assertEqual(response, "")
+        self.assertIn("escaped the review worktree", error or "")
+
     def test_antigravity_allows_sed_range_expressions_in_worktree(self) -> None:
         expected_head = "a" * 40
         provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
