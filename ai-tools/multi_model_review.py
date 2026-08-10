@@ -447,7 +447,7 @@ Antigravity execution boundary:
   transcript, reread `{instruction_path}` instead. Never read or search Antigravity
   CLI transcripts, logs, or scratch state.
 - Before inspecting anything, run exactly: `{provenance_cmd}`
-- That first tool call must contain only that command. Do not append, redirect,
+- That first repository command must contain only that command. Do not append, redirect,
   pipe, or combine it with another command.
 - Its output must be exactly `{expected_head}`. If it differs, stop and report failure.
 - Run every later repository command with its Cwd inside `{worktree}`.
@@ -462,55 +462,55 @@ Antigravity final-output override:
     schema_path = (out / "antigravity.schema.json").resolve()
     schema_path.write_text(json.dumps(ANTIGRAVITY_REVIEW_SCHEMA, separators=(",", ":")))
     for attempt in (1, 2):
-            attempt_prompt = f"""\
+        attempt_prompt = f"""\
 Read the complete review instructions from `{instruction_path}` and follow them exactly.
 Before inspecting the repository, run exactly: `{provenance_cmd}`
 Its output must be exactly `{expected_head}`. If it differs, stop and report failure.
 """
-            if attempt == 2:
-                attempt_prompt += (
-                    "\nThis is a fresh retry after the prior model generation timed out. "
-                    "Inspect concisely, then emit the schema-constrained result once. "
-                    "Do not repeat filler or status words.\n"
-                )
-            cmd = [
-                "agy",
-                "-p",
-                attempt_prompt,
-                "--dangerously-skip-permissions",
-                "--output-format",
-                "stream-json",
-                "--json-schema",
-                str(schema_path),
-                "--print-timeout",
-                "10m",
-            ]
-            if LANE_MODELS["antigravity"]:
-                cmd += ["--model", LANE_MODELS["antigravity"]]
-            p = run(cmd, cwd=wt)
-            if attempt == 1 and _antigravity_retryable_error(p.stdout) is not None:
-                (out / "antigravity.attempt1.stream.jsonl").write_text(p.stdout)
-                (out / "antigravity.attempt1.err").write_text(p.stderr)
-                print("[antigravity] generation timed out; retrying once with a fresh conversation")
-                continue
-
-            (out / "antigravity.stream.jsonl").write_text(p.stdout)
-            response, stream_error = _parse_antigravity_stream(
-                p.stdout,
-                worktree=worktree,
-                provenance_cmd=provenance_cmd,
-                expected_head=expected_head,
+        if attempt == 2:
+            attempt_prompt += (
+                "\nThis is a fresh retry after the prior model generation timed out. "
+                "Inspect concisely, then emit the schema-constrained result once. "
+                "Do not repeat filler or status words.\n"
             )
-            errors = [part for part in (p.stderr.strip(), stream_error) if part]
-            if p.returncode != 0 and not errors:
-                errors.append(f"agy exited {p.returncode} without a structured error")
-            if errors:
-                err = "\n".join(errors)
-                (out / "antigravity.err").write_text(err)
-                return LaneResult("", p.returncode or 1, err)
-            wrapped = f"{SENTINEL_OPEN}\n{response}\n{SENTINEL_CLOSE}"
-            (out / "antigravity.err").write_text("")
-            return LaneResult(wrapped, 0, "")
+        cmd = [
+            "agy",
+            "-p",
+            attempt_prompt,
+            "--dangerously-skip-permissions",
+            "--output-format",
+            "stream-json",
+            "--json-schema",
+            str(schema_path),
+            "--print-timeout",
+            "10m",
+        ]
+        if LANE_MODELS["antigravity"]:
+            cmd += ["--model", LANE_MODELS["antigravity"]]
+        p = run(cmd, cwd=wt)
+        if attempt == 1 and _antigravity_retryable_error(p.stdout) is not None:
+            (out / "antigravity.attempt1.stream.jsonl").write_text(p.stdout)
+            (out / "antigravity.attempt1.err").write_text(p.stderr)
+            print("[antigravity] generation timed out; retrying once with a fresh conversation")
+            continue
+
+        (out / "antigravity.stream.jsonl").write_text(p.stdout)
+        response, stream_error = _parse_antigravity_stream(
+            p.stdout,
+            worktree=worktree,
+            provenance_cmd=provenance_cmd,
+            expected_head=expected_head,
+        )
+        errors = [part for part in (p.stderr.strip(), stream_error) if part]
+        if p.returncode != 0 and not errors:
+            errors.append(f"agy exited {p.returncode} without a structured error")
+        if errors:
+            err = "\n".join(errors)
+            (out / "antigravity.err").write_text(err)
+            return LaneResult("", p.returncode or 1, err)
+        wrapped = f"{SENTINEL_OPEN}\n{response}\n{SENTINEL_CLOSE}"
+        (out / "antigravity.err").write_text("")
+        return LaneResult(wrapped, 0, "")
 
     err = "Antigravity lane exhausted its generation retry without a result."
     (out / "antigravity.err").write_text(err)

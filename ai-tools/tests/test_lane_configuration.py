@@ -213,7 +213,7 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertIn(str(worktree), grounded_prompt)
         self.assertIn(expected_head, grounded_prompt)
 
-    def test_antigravity_keeps_checkpoint_recovery_in_the_review_worktree(self) -> None:
+    def test_antigravity_keeps_checkpoint_recovery_in_the_prompt_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             worktree = root / "review"
@@ -268,15 +268,16 @@ class LaneConfigurationTest(unittest.TestCase):
                 if calls == 1:
                     return CompletedProcess(args=cmd, returncode=0, stdout=f"{expected_head}\n", stderr="")
 
-                instruction_files = list(worktree.glob(".multi-review-antigravity-*.md"))
-                self.assertEqual(len(instruction_files), 1)
-                instructions = instruction_files[0].read_text()
+                instruction_path = out / "antigravity.prompt"
+                instructions = instruction_path.read_text()
                 self.assertIn("checkpoint recovery contract marker", instructions)
-                self.assertIn(str(instruction_files[0]), cmd[cmd.index("-p") + 1])
+                self.assertIn(str(instruction_path), cmd[cmd.index("-p") + 1])
                 self.assertNotIn("checkpoint recovery contract marker", cmd[cmd.index("-p") + 1])
                 self.assertIn("transcript", instructions.lower())
                 self.assertIn("For every changed", instructions)
                 self.assertIn("top-level directory", instructions)
+                schema_path = Path(cmd[cmd.index("--json-schema") + 1])
+                self.assertEqual(json.loads(schema_path.read_text()), multi_model_review.ANTIGRAVITY_REVIEW_SCHEMA)
                 return CompletedProcess(args=cmd, returncode=0, stdout=stream, stderr="")
 
             with (
@@ -286,7 +287,8 @@ class LaneConfigurationTest(unittest.TestCase):
                 result = multi_model_review.lane_antigravity("checkpoint recovery contract marker", str(worktree), out)
 
             self.assertEqual(result.code, 0)
-            self.assertEqual(list(worktree.glob(".multi-review-antigravity-*.md")), [])
+            self.assertTrue((out / "antigravity.prompt").exists())
+            self.assertTrue((out / "antigravity.schema.json").exists())
 
     def test_antigravity_retries_a_structured_generation_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as td:
