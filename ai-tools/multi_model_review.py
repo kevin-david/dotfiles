@@ -332,6 +332,16 @@ def load_prompt_template(prompt_path: Path | None, review_kind: str) -> str:
 
 # --- lanes -------------------------------------------------------------------
 # Each lane runs a CLI headless in the worktree and returns its raw final text.
+def _write_lane_prompt(out: Path, lane: str, prompt: str) -> Path:
+    prompt_path = (out / f"{lane}.prompt").resolve()
+    prompt_path.write_text(prompt)
+    return prompt_path
+
+
+def _prompt_file_instruction(prompt_path: Path) -> str:
+    return f"Read the complete review instructions from `{prompt_path}` and follow them exactly."
+
+
 def _claude_command(prompt: str, model: str) -> list[str]:
     cmd = [
         "claude",
@@ -359,13 +369,15 @@ def _claude_model_unavailable(result: CompletedProcess[str]) -> bool:
 
 
 def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
+    prompt_path = _write_lane_prompt(out, "claude", prompt)
+    prompt_instruction = _prompt_file_instruction(prompt_path)
     primary_model = LANE_MODELS["claude"]
-    primary = run(_claude_command(prompt, primary_model), cwd=wt)
+    primary = run(_claude_command(prompt_instruction, primary_model), cwd=wt)
     attempts = [(primary_model, primary)]
 
     if _claude_model_unavailable(primary) and primary_model != CLAUDE_FALLBACK_MODEL:
         print(f"[claude] {primary_model or 'default'} unavailable; retrying once with {CLAUDE_FALLBACK_MODEL}")
-        fallback = run(_claude_command(prompt, CLAUDE_FALLBACK_MODEL), cwd=wt)
+        fallback = run(_claude_command(prompt_instruction, CLAUDE_FALLBACK_MODEL), cwd=wt)
         attempts.append((CLAUDE_FALLBACK_MODEL, fallback))
         if not _claude_model_unavailable(fallback):
             LANE_EFFECTIVE_MODELS["claude"] = CLAUDE_FALLBACK_MODEL
@@ -394,6 +406,7 @@ def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
 
 
 def lane_codex(prompt: str, wt: str, out: Path) -> LaneResult:
+    prompt_path = _write_lane_prompt(out, "codex", prompt)
     last = out / "codex.last"
     cmd = [
         "codex",
@@ -409,7 +422,7 @@ def lane_codex(prompt: str, wt: str, out: Path) -> LaneResult:
     ]
     if LANE_MODELS["codex"]:
         cmd += ["-m", LANE_MODELS["codex"]]
-    cmd += [prompt]
+    cmd += [_prompt_file_instruction(prompt_path)]
     p = run(cmd)
     (out / "codex.err").write_text(p.stderr)
     # codex writes its final message to `last`; stdout is the event log.
@@ -425,15 +438,7 @@ def lane_antigravity(prompt: str, wt: str, out: Path) -> LaneResult:
     prompt = _with_changed_root_coverage_instruction(prompt)
     expected_head = run_ok(["git", "-C", str(worktree), "rev-parse", "HEAD"]).strip()
     provenance_cmd = f"git -C {shlex.quote(str(worktree))} rev-parse HEAD"
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        prefix=".multi-review-antigravity-",
-        suffix=".md",
-        dir=worktree,
-        delete=False,
-    ) as instruction_file:
-        instruction_path = Path(instruction_file.name)
+    instruction_path = (out / "antigravity.prompt").resolve()
     grounded_prompt = f"""\
 Antigravity execution boundary:
 - The checked-out review worktree is exactly `{worktree}`.
@@ -454,10 +459,14 @@ Antigravity final-output override:
 - Do not emit the `<<<REVIEW_JSON` / `REVIEW_JSON>>>` wrapper requested above.
 """
     instruction_path.write_text(grounded_prompt)
-    schema = json.dumps(ANTIGRAVITY_REVIEW_SCHEMA, separators=(",", ":"))
-    try:
-        for attempt in (1, 2):
-            attempt_prompt = grounded_prompt
+    schema_path = (out / "antigravity.schema.json").resolve()
+    schema_path.write_text(json.dumps(ANTIGRAVITY_REVIEW_SCHEMA, separators=(",", ":")))
+    for attempt in (1, 2):
+            attempt_prompt = f"""\
+Read the complete review instructions from `{instruction_path}` and follow them exactly.
+Before inspecting the repository, run exactly: `{provenance_cmd}`
+Its output must be exactly `{expected_head}`. If it differs, stop and report failure.
+"""
             if attempt == 2:
                 attempt_prompt += (
                     "\nThis is a fresh retry after the prior model generation timed out. "
@@ -472,7 +481,7 @@ Antigravity final-output override:
                 "--output-format",
                 "stream-json",
                 "--json-schema",
-                schema,
+                str(schema_path),
                 "--print-timeout",
                 "10m",
             ]
@@ -503,11 +512,9 @@ Antigravity final-output override:
             (out / "antigravity.err").write_text("")
             return LaneResult(wrapped, 0, "")
 
-        err = "Antigravity lane exhausted its generation retry without a result."
-        (out / "antigravity.err").write_text(err)
-        return LaneResult("", 1, err)
-    finally:
-        instruction_path.unlink(missing_ok=True)
+    err = "Antigravity lane exhausted its generation retry without a result."
+    (out / "antigravity.err").write_text(err)
+    return LaneResult("", 1, err)
 
 
 def _antigravity_retryable_error(raw: str) -> str | None:
@@ -1321,9 +1328,6 @@ def main() -> None:
             lane: render_prompt(template, base=base, slug=slug, head=head, pr=pr, body=meta.get("body", ""))
             for lane in lanes
         }
-        for lane in lanes:
-            (out / f"{lane}.prompt").write_text(prompts[lane])
-
         # Run lanes in parallel; each harness explores the worktree independently.
         # The lanes capture each CLI's output in memory (no growing file to
         # watch), so a heartbeat reports per-lane elapsed time — enough to tell a

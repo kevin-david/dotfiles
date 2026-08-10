@@ -26,28 +26,25 @@ class LaneConfigurationTest(unittest.TestCase):
     def test_claude_and_codex_commands_use_their_default_presets(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
+            prompt = "review contract marker"
             completed = CompletedProcess(args=[], returncode=0, stdout="review", stderr="")
             with patch.object(multi_model_review, "run", return_value=completed) as run:
-                multi_model_review.lane_claude("prompt", td, out)
+                multi_model_review.lane_claude(prompt, td, out)
                 claude_cmd = run.call_args.args[0]
 
-                multi_model_review.lane_codex("prompt", td, out)
+                multi_model_review.lane_codex(prompt, td, out)
                 codex_cmd = run.call_args.args[0]
 
-        self.assertEqual(
-            claude_cmd,
-            [
-                "claude",
-                "-p",
-                "prompt",
-                "--permission-mode",
-                "bypassPermissions",
-                "--effort",
-                "high",
-                "--model",
-                "fable",
-            ],
-        )
+            self.assertEqual((out / "claude.prompt").read_text(), prompt)
+            self.assertEqual((out / "codex.prompt").read_text(), prompt)
+
+        self.assertEqual(claude_cmd[0:2], ["claude", "-p"])
+        self.assertNotIn(prompt, claude_cmd)
+        self.assertIn("claude.prompt", claude_cmd[2])
+        self.assertEqual(claude_cmd[3:7], ["--permission-mode", "bypassPermissions", "--effort", "high"])
+        self.assertEqual(claude_cmd[-2:], ["--model", "fable"])
+        self.assertNotIn(prompt, codex_cmd)
+        self.assertIn("codex.prompt", codex_cmd[-1])
         self.assertIn('model_reasoning_effort="high"', codex_cmd)
         self.assertEqual(codex_cmd[codex_cmd.index("-m") + 1], "gpt-5.6-sol")
 
@@ -276,6 +273,7 @@ class LaneConfigurationTest(unittest.TestCase):
                 instructions = instruction_files[0].read_text()
                 self.assertIn("checkpoint recovery contract marker", instructions)
                 self.assertIn(str(instruction_files[0]), cmd[cmd.index("-p") + 1])
+                self.assertNotIn("checkpoint recovery contract marker", cmd[cmd.index("-p") + 1])
                 self.assertIn("transcript", instructions.lower())
                 self.assertIn("For every changed", instructions)
                 self.assertIn("top-level directory", instructions)
