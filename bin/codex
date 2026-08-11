@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Launch Codex, picking up an account switch first.
+#
+# Codex's app-server daemon loads credentials once at startup and offers no way
+# to re-read them. So switching accounts -- by hand, or by a background
+# switcher like `codex-auth` -- changes the files on disk while a running daemon
+# keeps serving the account it booted with. The switch looks like it worked and
+# silently does nothing, including switching off an account that has run out of
+# quota.
+#
+# There is no supported in-place fix. The app-server protocol's only route is
+# `account/login/start` with `chatgptAuthTokens`, which is marked OpenAI-internal
+# and unstable, stores tokens in memory only, and makes the caller responsible
+# for token refresh. Restarting the daemon is the supported option.
+#
+# So detect the switch at launch, when a restart is cheapest: you are starting a
+# session anyway, and recorded sessions survive it (`codex resume --last`).
+#
+# Keyed on the registry's active_account_key, deliberately:
+#   - not auth.json's mtime, which also changes on every token refresh and would
+#     restart the daemon constantly;
+#   - not the ChatGPT account id, because several logins into one workspace share
+#     it, so switching between them would go undetected.
+#
+# Set CODEX_NO_AUTO_RESTART=1 to report the stale daemon instead of restarting.
+set -euo pipefail
+
+CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
+CODEX_BIN="$CODEX_ROOT/packages/standalone/current/bin/codex"
+STAMP="$CODEX_ROOT/.active-account-stamp"
+
+if [ ! -x "$CODEX_BIN" ]; then
+  echo "codex: no managed install at $CODEX_BIN" >&2
+  echo "codex: install it with: curl -fsSL https://chatgpt.com/codex/install.sh | sh" >&2
+  exit 127
+fi
+
+# Read the selected account without needing a JSON parser on PATH.
+active_account_key() {
+  local registry="$CODEX_ROOT/accounts/registry.json"
+  [ -f "$registry" ] || return 0
+  sed -n 's/.*"active_account_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$registry" | head -1
+}
+
+# Only meaningful when a daemon is already running; there is nothing stale
+# otherwise, and starting one here would be a surprise.
+daemon_running() {
+  [ -S "$CODEX_ROOT/app-server-control/app-server-control.sock" ]
+}
+
+key="$(active_account_key || true)"
+if [ -n "$key" ]; then
+  if [ ! -f "$STAMP" ]; then
+    # First run on this machine. A missing stamp is not evidence of a switch, so
+    # adopt the current account rather than restarting a daemon that is probably
+    # already serving it. Switches from here on are detected normally.
+    printf '%s' "$key" > "$STAMP"
+    exec "$CODEX_BIN" "$@"
+  fi
+
+  prev="$(cat "$STAMP" 2>/dev/null || true)"
+
+  if [ "$key" != "$prev" ]; then
+    if daemon_running; then
+      if [ "${CODEX_NO_AUTO_RESTART:-0}" = 1 ]; then
+        echo "codex: active account changed; the running app-server still serves the old one." >&2
+        echo "codex: run 'codex app-server daemon restart' to pick it up." >&2
+      else
+        echo "codex: active account changed — restarting app-server to pick it up." >&2
+        "$CODEX_BIN" app-server daemon restart >/dev/null 2>&1 || true
+        printf '%s' "$key" > "$STAMP"
+      fi
+    else
+      # No daemon yet, so whatever starts next reads the current account.
+      printf '%s' "$key" > "$STAMP"
+    fi
+  fi
+fi
+
+exec "$CODEX_BIN" "$@"
