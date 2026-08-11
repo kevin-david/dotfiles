@@ -4,6 +4,26 @@ export ZSH=$HOME/.dotfiles
 # your project folder that we can `c [tab]` to
 export PROJECTS=~/dev
 
+# The block below is checked in on purpose, and its position matters.
+#
+# ~/.zshrc is a symlink to this file, and Codex's installer appends a PATH block
+# to ~/.zshrc on every install or update (on Linux with zsh, `pick_profile`
+# resolves to ~/.zshrc). Deleting it is what makes it come back: the installer
+# skips writing only when its markers are already present with a matching
+# export line. So it lives here instead of being removed every update.
+#
+# Keep it ABOVE the loops below, not appended at the end where the installer
+# puts it. system/_path.zsh prepends ~/.local/bin too, and then prepends the
+# Codex managed-install bin dir ahead of it; if this block ran last it would
+# push ~/.local/bin back in front, and the shared ~/.local/bin/codex shim is
+# rewritten by whichever host updated last, so it frequently dangles.
+#
+# The line itself is redundant — system/_path.zsh:1 already adds this directory.
+# Do not add commentary between the markers: the installer rewrites that span.
+# >>> Codex installer >>>
+export PATH="/home/kevin/.local/bin:$PATH"
+# <<< Codex installer <<<
+
 # Stash your environment variables in ~/.localrc. This means they'll stay out
 # of your main dotfiles repository (which may be public, like this one), but
 # you'll have access to them in your scripts.
