@@ -31,16 +31,16 @@ class ReviewPromptTemplateDiscoveryTest(unittest.TestCase):
 # from a path, not a shallow treatment surviving on one (the known blind spot —
 # reconcile depth by review, not by prose-length assertions).
 SHARED_CONCEPT_MARKERS = {
-    "producing mechanism": ("manual", "code", "plan", "bar"),
-    "subtractive": ("manual", "code", "plan", "bar"),
-    "round trips": ("manual", "code", "plan"),
-    "Unverified:": ("manual", "code", "plan", "bar"),
-    "event loop stalls": ("manual", "code", "plan"),
-    "tooltip": ("manual", "code", "plan"),
-    "presumptively": ("manual", "code", "plan", "bar"),
-    "operator-facing": ("manual", "code", "plan", "bar"),
-    "missing evidence": ("manual", "code", "plan", "bar"),
-    "risk ordered first": ("manual", "plan"),
+    "producing mechanism": ("rubric", "code", "plan", "bar"),
+    "subtractive": ("rubric", "code", "plan", "bar"),
+    "round trips": ("rubric", "code", "plan"),
+    "Unverified:": ("rubric", "code", "plan", "bar"),
+    "event loop stalls": ("rubric", "code", "plan"),
+    "tooltip": ("rubric", "code", "plan"),
+    "presumptively": ("rubric", "code", "plan", "bar"),
+    "operator-facing": ("rubric", "code", "plan"),
+    "missing evidence": ("rubric", "code", "plan"),
+    "risk ordered first": ("rubric", "plan"),
 }
 
 
@@ -79,12 +79,15 @@ class ReviewPromptRenderingTest(unittest.TestCase):
             self.skipTest("review-rubric skill not installed locally")
 
     def _authored_paths(self) -> dict[str, str]:
-        # "bar" is the portable review bar the native reviewers read
-        # (~/.claude/REVIEWING.md); pinning it here keeps it from drifting
-        # off the rubric's shared concepts.
+        # "bar" is ~/.claude/REVIEWING.md, always-on context for every Claude
+        # Code and Codex session. It routes to this skill and carries only the
+        # presumptions that must still fire when no skill is loaded, so it is
+        # pinned to that subset — the procedural concepts (contract sweeps,
+        # skipped-contract-test evidence) are asserted on the rubric paths
+        # only. Amended 2026-08-11 when the bar became a pointer.
         templates = render_review_prompt.templates_dir()
         return {
-            "manual": (templates.parent / "manual.md").read_text(),
+            "rubric": (templates.parent / "SKILL.md").read_text(),
             "code": (templates / "code-review.md").read_text(),
             "plan": (templates / "plan-review.md").read_text(),
             "bar": (templates.parents[2] / "REVIEWING.md").read_text(),

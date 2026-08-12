@@ -173,15 +173,16 @@ not a ceiling.
    invariants expressed in the type, or left implicit and enforceable only by
    convention?
 
-7. **Code smells.** Recurring design problems the change introduces or worsens:
-   *primitive obsession* (raw `str`/`int`/dict where a small domain type
-   belongs — money, ids, units, enums), *stringly-typed* logic, *boolean/flag
-   parameters* that hide two behaviors in one function, *long parameter lists*
-   and *data clumps* (the same group of args threaded everywhere — make it a
-   type), *feature envy* (a method that mostly pokes at another object's data),
-   *shotgun surgery* (one logical change forcing edits in many places), deep
-   nesting, and god functions/classes. Flag the smell, name it, and suggest the
-   refactor — but only when it's worth the churn, not as dogma.
+7. **Code smells.** Recurring design problems the change introduces or worsens.
+   A new `str`/`int`/`dict`/`Any`/tuple carrying domain meaning — an id, money,
+   a unit, a state, a record — is a finding when a NamedTuple, dataclass, or
+   enum would make an invalid state unrepresentable; name the type and the
+   value it rules out. A literal steering a branch is a finding when the same
+   literal appears at a second site; name both sites. Also *boolean/flag
+   parameters* hiding two behaviors, *data clumps* (the same args threaded
+   everywhere), *feature envy*, *shotgun surgery*, deep nesting, and god
+   functions/classes. Name the smell and the refactor — only when it's worth
+   the churn, not as dogma.
 
 8. **Configuration mismatches.** Features whose implementation contradicts
    their user-facing documentation, tooltips, or schema.
