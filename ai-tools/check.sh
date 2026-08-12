@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Lint + type-check the ai-tools scripts to exchanger's house bar.
-# Stdlib-only scripts, so this runs via uvx on the host — no Docker (unlike
-# exchanger's scripts/ruff.sh + scripts/ty.sh, which mount the api-server image).
+# Lint + type-check the ai-tools scripts.
+# Stdlib-only scripts, so this runs via uvx on the host — no Docker and no
+# install needed to resolve imports.
 # Config (ruff select + ty all=error) lives in pyproject.toml alongside.
 #
 #   ./check.sh        # check + format-check + ty (read-only; nonzero on any failure)
