@@ -253,14 +253,14 @@ def die(msg: str) -> NoReturn:
     raise SystemExit(1)
 
 
-def run(cmd: list[str], **kw) -> CompletedProcess[str]:
+def run(cmd: list[str], *, cwd: str | Path | None = None, input: str | None = None) -> CompletedProcess[str]:
     """Run a command, capturing text output. Does not raise on nonzero."""
-    return subprocess.run(cmd, capture_output=True, text=True, check=False, **kw)
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=cwd, input=input)
 
 
-def run_ok(cmd: list[str], **kw) -> str:
+def run_ok(cmd: list[str]) -> str:
     """Run a command that must succeed; return stdout."""
-    p = run(cmd, **kw)
+    p = run(cmd)
     if p.returncode != 0:
         die(f"command failed: {' '.join(cmd)}\n{p.stderr.strip()}")
     return p.stdout
