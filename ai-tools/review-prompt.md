@@ -99,22 +99,25 @@ problem is a claim to verify, not a fact.
 | Does the change eliminate the producing mechanism? | Targets a symptom while the mechanism stays live | The requirement is assumed, or a proposed solution is restated as the need | Name the mechanism and the input that still reaches it |
 | Does this belong here? | The change sits in a component that lacks the state or authority the decision needs, so it duplicates, reconstructs, or guesses it | Same | Name the state needed and the component that already owns it |
 | Does it create a second authority or path? | Two mechanisms can now make the same decision under divergent rules | A second way to express an established concept | Name both paths and the input on which they can diverge |
-| Is there a smaller sufficient change? | An existing seam, unconditional rule, or deletion produces the required behavior with less state to synchronize | Same | Name the alternative and any required behavior it would fail to preserve. If none, name the callers and requirements checked |
 | Does it cover the whole cause? | The cause is correctly identified but addressed at one of several sites that reach it | The change serves one caller of a need shared by others it does not mention | Name the other reaching sites and confirm they are unfixed |
 
 ### Subtractive check
 
-New code tends to get stacked on old. Require a concrete subtractive
-alternative, but do not treat addition, layering, or a flag as a finding by
-itself. When the producing mechanism is an existing optimization or
-special case, the candidate deletion is that mechanism itself — a patch at
-its consumers is not the subtractive option.
+One mechanism in, at least one removal examined. For each added wrapper,
+adapter, helper, flag, path, or state owner, identify an existing mechanism
+that could be deleted or relaxed. If it must remain, name the required behavior
+it preserves and the callers or consumers checked. Addition alone is not a
+finding; a concrete redundant path, synchronization cost, divergent result, or
+unnecessary supported state is.
+
+When an existing optimization or special case produces the symptom, examine
+deleting that mechanism itself. Patching its consumers is not the subtractive
+option.
 
 | Ask | Finding when | Evidence required |
 |---|---|---|
-| Was a subtractive option weighed? | The change adds a mechanism where removing or relaxing an existing one — often an earlier optimization or special case — achieves the same outcome | Name the deletion and any required behavior it breaks. If none was found, name the inspected callers and consumers supporting that conclusion |
+| New mechanism without a removal check | No existing mechanism was examined for deletion or relaxation | Name the added mechanism, the removal candidate, and the behavior or callers that require retaining it |
 | Replacement that only adds | The change describes itself as replacing behavior, but the old path remains reachable | Name the old path and the input that still reaches it |
-| Added layer or flag | A wrapper, adapter, or option creates a concrete sync burden, divergent result, or unnecessary supported state | Name the present cost or the input on which behavior diverges |
 | Superseded leftovers | Code the change obsoletes is left in place: unused function, unreachable branch, dead test | Name the dead symbol |
 
 When the repo documents a binding simplicity rule, cite it; do not elevate a
@@ -138,14 +141,7 @@ not a ceiling.
    substitutes one field for a semantically different one. Swallowed exceptions,
    empty `catch` blocks, missing error logging.
 
-3. **Optimizations & simplifications.** Dead or premature abstractions,
-   duplicated logic that should be shared, needless allocations / queries /
-   passes, error handling for impossible cases. **Never** propose an
-   "optimization" that changes observable behavior — especially in
-   correctness-critical paths (money, math, security) — without flagging the
-   behavior change explicitly. Correctness outranks speed.
-
-4. **Unnecessary or duplicate tests.** Flag tests that are redundant, that
+3. **Unnecessary or duplicate tests.** Flag tests that are redundant, that
    pin current behavior without asserting anything meaningful, or that test
    removed functionality. Also flag when new logic is untestable as written —
    pure logic entangled with framework/IO imports the test harness can't
@@ -153,7 +149,7 @@ not a ceiling.
    supported fallback and clean-install path; a skipped contract test is
    missing evidence, not a pass.
 
-5. **Comment & prose conciseness.** Comments now wrong vs. the code (rot), or
+4. **Comment & prose conciseness.** Comments now wrong vs. the code (rot), or
    that restate *what* the code does instead of justifying *why*. Flag **brittle**
    comments too, but draw the line carefully: a comment that explains *why the code
    is the way it is* — a durable external fact, constraint, or discovery — is good
@@ -169,14 +165,14 @@ not a ceiling.
    Quote the bloated passage and give the tighter rewrite — a concrete edit, never
    a bare "could be more concise."
 
-6. **Type design / invariants.** Name domain-bearing primitives as the repo
+5. **Type design / invariants.** Name domain-bearing primitives as the repo
    requires, but do not turn a parameter list into an object by default. Group
    values only when the wrapper enforces an invariant, has domain identity,
    owns behavior, or crosses multiple boundaries as a unit. A one-use bundle
    that merely repackages named typed parameters is a finding; replace it with
    those parameters.
 
-7. **Code smells.** Recurring design problems the change introduces or worsens.
+6. **Code smells.** Recurring design problems the change introduces or worsens.
    A bare record or positional pair carrying domain meaning is a finding when
    a named structure would rule out a concrete invalid state; name both. A
    literal steering a branch is a finding when the same literal appears at a
@@ -186,7 +182,7 @@ not a ceiling.
    functions/classes. Name the smell and the refactor — only when it's worth
    the churn, not as dogma.
 
-8. **Configuration mismatches.** Features whose implementation contradicts
+7. **Configuration mismatches.** Features whose implementation contradicts
    their user-facing documentation, tooltips, or schema.
 
 ## Performance and cost
