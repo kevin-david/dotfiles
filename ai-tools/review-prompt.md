@@ -169,16 +169,18 @@ not a ceiling.
    Quote the bloated passage and give the tighter rewrite — a concrete edit, never
    a bare "could be more concise."
 
-6. **Type design / invariants** (when new types or schemas are added). Are
-   invariants expressed in the type, or left implicit and enforceable only by
-   convention?
+6. **Type design / invariants.** Name domain-bearing primitives as the repo
+   requires, but do not turn a parameter list into an object by default. Group
+   values only when the wrapper enforces an invariant, has domain identity,
+   owns behavior, or crosses multiple boundaries as a unit. A one-use bundle
+   that merely repackages named typed parameters is a finding; replace it with
+   those parameters.
 
 7. **Code smells.** Recurring design problems the change introduces or worsens.
-   A new `str`/`int`/`dict`/`Any`/tuple carrying domain meaning — an id, money,
-   a unit, a state, a record — is a finding when a NamedTuple, dataclass, or
-   enum would make an invalid state unrepresentable; name the type and the
-   value it rules out. A literal steering a branch is a finding when the same
-   literal appears at a second site; name both sites. Also *boolean/flag
+   A bare record or positional pair carrying domain meaning is a finding when
+   a named structure would rule out a concrete invalid state; name both. A
+   literal steering a branch is a finding when the same literal appears at a
+   second site; name both sites. Also *boolean/flag
    parameters* hiding two behaviors, *data clumps* (the same args threaded
    everywhere), *feature envy*, *shotgun surgery*, deep nesting, and god
    functions/classes. Name the smell and the refactor — only when it's worth
