@@ -141,13 +141,13 @@ not a ceiling.
    substitutes one field for a semantically different one. Swallowed exceptions,
    empty `catch` blocks, missing error logging.
 
-3. **Unnecessary or duplicate tests.** Flag tests that are redundant, that
-   pin current behavior without asserting anything meaningful, or that test
-   removed functionality. Also flag when new logic is untestable as written —
-   pure logic entangled with framework/IO imports the test harness can't
-   load — and name the extraction that would make it reachable. Verify every
-   supported fallback and clean-install path; a skipped contract test is
-   missing evidence, not a pass.
+3. **Test value and coverage.** Inventory every added or materially changed
+   test; in `method`, name the concrete production-code mutation each catches.
+   Tests sharing a detector are duplicates unless one adds localization or
+   reach; flag the weaker one. Also flag tests that pass with behavior broken or
+   deleted, copy current output instead of an invariant or contract, or add cases
+   crossing no boundary. Prefer the cheapest real-behavior level; skipped
+   fallback or clean-install contracts are missing evidence.
 
 4. **Comment & prose conciseness.** Comments now wrong vs. the code (rot), or
    that restate *what* the code does instead of justifying *why*. Flag **brittle**

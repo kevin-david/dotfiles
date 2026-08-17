@@ -174,14 +174,13 @@ Lenses for a plan. Add your own freely — this is a floor, not a ceiling.
    Does it treat a passing automated check as proof, or call for the right
    human/empirical verification? Over-trust here is a finding.
 
-6. **Test discipline.** Are the planned tests meaningful and verify the actual
-   behavior — or do they pin current behavior, assert nothing, test removed
-   functionality, or duplicate each other? Does the plan verify on the real
-   running surface where that's what the change demands, rather than treating an
-   import/unit-only pass as done? Are there steps whose described test would not
-   actually fail before the implementation / pass after? Do the planned tests
-   cover every supported fallback and clean-install path — a contract test
-   that would skip on one of them is missing evidence, not a pass.
+6. **Test value and coverage.** Each planned test names a concrete production
+   mutation, fails before implementation and passes after, and derives its
+   expectation from an invariant or contract. Tests sharing a detector are
+   duplicates unless one adds localization or reach; flag the weaker one.
+   Prefer the cheapest level exercising actual behavior, including the running
+   surface when required. Cover every supported fallback and clean-install
+   path; a skipped contract is missing evidence.
 
 7. **Placeholders & under-specification.** The plan-document failure mode: "TBD",
    "handle errors appropriately", "adapt as needed", "similar to the above"
