@@ -507,6 +507,109 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(response, "review")
         self.assertIsNone(error)
 
+    def test_antigravity_allows_file_in_cli_scratch_directory(self) -> None:
+        expected_head = "a" * 40
+        provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
+        scratch_file = Path.home() / ".gemini" / "antigravity-cli" / "scratch" / "diff.patch"
+        stream = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "run_command",
+                                "parameters": {"CommandLine": provenance_cmd},
+                                "output": expected_head,
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "view_file",
+                                "parameters": {"AbsolutePath": str(scratch_file)},
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "result",
+                        "result": {"status": "SUCCESS", "response": "review"},
+                    }
+                ),
+            ]
+        )
+
+        response, error = multi_model_review._parse_antigravity_stream(
+            stream,
+            worktree=Path("/tmp/review-worktree"),
+            provenance_cmd=provenance_cmd,
+            expected_head=expected_head,
+        )
+
+        self.assertEqual(response, "review")
+        self.assertIsNone(error)
+
+    def test_antigravity_rejects_cli_scratch_as_repository_cwd(self) -> None:
+        expected_head = "a" * 40
+        provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
+        scratch_directory = Path.home() / ".gemini" / "antigravity-cli" / "scratch"
+        stream = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "run_command",
+                                "parameters": {"CommandLine": provenance_cmd},
+                                "output": expected_head,
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "tool_info": {
+                                "name": "run_command",
+                                "parameters": {
+                                    "CommandLine": "git status",
+                                    "Cwd": str(scratch_directory),
+                                },
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "result",
+                        "result": {"status": "SUCCESS", "response": "review"},
+                    }
+                ),
+            ]
+        )
+
+        response, error = multi_model_review._parse_antigravity_stream(
+            stream,
+            worktree=Path("/tmp/review-worktree"),
+            provenance_cmd=provenance_cmd,
+            expected_head=expected_head,
+        )
+
+        self.assertEqual(response, "")
+        self.assertIn("escaped the review worktree", error or "")
+
     def test_antigravity_rejects_file_outside_worktree_and_system_temp_directory(self) -> None:
         expected_head = "a" * 40
         provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"

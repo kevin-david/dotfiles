@@ -145,6 +145,7 @@ def env(name: str, default: str) -> str:
 # severity is reported, never used as a gate here.
 THRESHOLD = int(env("REVIEW_THRESHOLD", "50"))
 HEARTBEAT_SECS = int(env("REVIEW_HEARTBEAT_SECS", "30"))
+ANTIGRAVITY_SCRATCH_ROOT = (Path.home() / ".gemini" / "antigravity-cli" / "scratch").resolve()
 LANE_LABELS = {
     "claude": env("REVIEW_CLAUDE_LABEL", "Claude"),
     "codex": env("REVIEW_CODEX_LABEL", "Codex"),
@@ -571,8 +572,15 @@ def _parse_antigravity_stream(
                         }:
                             continue
                         resolved_path = Path(value).resolve()
-                        if normalized_key in {"absolutepath", "path"} and _path_is_within(
-                            resolved_path, Path(tempfile.gettempdir()).resolve()
+                        if normalized_key in {"absolutepath", "path"} and (
+                            _path_is_within(
+                                resolved_path,
+                                Path(tempfile.gettempdir()).resolve(),
+                            )
+                            or _path_is_within(
+                                resolved_path,
+                                ANTIGRAVITY_SCRATCH_ROOT,
+                            )
                         ):
                             continue
                         try:
