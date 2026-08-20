@@ -507,6 +507,8 @@ Its output must be exactly `{expected_head}`. If it differs, stop and report fai
             errors.append(f"agy exited {p.returncode} without a structured error")
         if errors:
             err = "\n".join(errors)
+            if response.strip():
+                (out / "antigravity.rejected.raw").write_text(response)
             (out / "antigravity.err").write_text(err)
             return LaneResult("", p.returncode or 1, err)
         wrapped = f"{SENTINEL_OPEN}\n{response}\n{SENTINEL_CLOSE}"
@@ -601,24 +603,30 @@ def _parse_antigravity_stream(
                 result_error = error
 
     outside_paths = {path for path in outside_paths if not _path_is_within(Path(path).resolve(), worktree)}
-    issues: list[str] = []
+    trust_issues: list[str] = []
     if not provenance_ok:
-        issues.append(
+        trust_issues.append(
             "Antigravity lane rejected: it did not prove the review checkout with "
             f"`{provenance_cmd}` -> `{expected_head}`."
         )
     if outside_paths:
         paths = ", ".join(sorted(outside_paths))
-        issues.append(f"Antigravity lane rejected: repository tools escaped the review worktree: {paths}")
+        trust_issues.append(
+            f"Antigravity lane rejected: repository tools escaped the review worktree: {paths}"
+        )
+    result_issues: list[str] = []
     if result_status != "SUCCESS":
         detail = f": {result_error}" if result_error else ""
-        issues.append(
+        result_issues.append(
             f"Antigravity lane rejected: structured result status was {result_status or '(missing)'}{detail}."
         )
     if not response.strip():
-        issues.append("Antigravity lane rejected: structured stream had no final response.")
-    if issues:
+        result_issues.append("Antigravity lane rejected: structured stream had no final response.")
+    issues = [*trust_issues, *result_issues]
+    if trust_issues:
         return "", "\n".join(issues)
+    if result_issues:
+        return response, "\n".join(result_issues)
     return response, None
 
 
@@ -1311,6 +1319,7 @@ def main() -> None:
 
     template = load_prompt_template(prompt_path, args.review_kind)
     out = Path(tempfile.mkdtemp(prefix=f"pr-{pr}-out."))
+    print(f"lane artifacts: {out}")
     wt = tempfile.mkdtemp(prefix=f"pr-{pr}-review.")
 
     # Review in a disposable detached worktree, so the PR's code is checked out

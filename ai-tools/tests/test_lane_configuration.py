@@ -213,6 +213,59 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertIn(str(worktree), grounded_prompt)
         self.assertIn(expected_head, grounded_prompt)
 
+    def test_antigravity_preserves_structured_output_rejected_by_result_status(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            worktree = root / "review"
+            worktree.mkdir()
+            out = root / "out"
+            out.mkdir()
+            expected_head = "a" * 40
+            provenance_cmd = f"git -C {worktree} rev-parse HEAD"
+            review = {"findings": [{"title": "recover me"}]}
+            stream = "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "event": "step_update",
+                            "step_update": {
+                                "state": "DONE",
+                                "tool_info": {
+                                    "name": "run_command",
+                                    "parameters": {"CommandLine": provenance_cmd},
+                                    "output": expected_head,
+                                },
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "event": "result",
+                            "result": {
+                                "status": "ERROR",
+                                "structured_output": review,
+                                "error": "renderer failed after generation",
+                            },
+                        }
+                    ),
+                ]
+            )
+            completed = CompletedProcess(args=[], returncode=1, stdout=stream, stderr="")
+            head = CompletedProcess(args=[], returncode=0, stdout=f"{expected_head}\n", stderr="")
+            with (
+                patch.object(multi_model_review, "run", side_effect=[head, completed]),
+                patch.dict(multi_model_review.LANE_MODELS, {"antigravity": ""}),
+            ):
+                result = multi_model_review.lane_antigravity("prompt", str(worktree), out)
+
+            self.assertEqual(result.code, 1)
+            self.assertEqual(result.out, "")
+            self.assertIn("structured result status was ERROR", result.err)
+            self.assertEqual(
+                json.loads((out / "antigravity.rejected.raw").read_text()),
+                review,
+            )
+
     def test_antigravity_keeps_checkpoint_recovery_in_the_prompt_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
