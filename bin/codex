@@ -25,8 +25,22 @@
 # Set CODEX_NO_AUTO_RESTART=1 to report the stale daemon instead of restarting.
 set -euo pipefail
 
+# CODEX_HOME selects Codex's state -- auth.json, accounts/registry.json, the
+# app-server socket -- and not its install. `codex-auth login` leans on exactly
+# that split: it runs the login flow under a throwaway CODEX_HOME
+# (~/.codex/accounts/login-<id>-0) so a failed attempt cannot corrupt the live
+# auth.json, then deletes it. That scratch home has no install under it, so
+# resolving the binary from CODEX_HOME killed every `codex-auth login` here with
+# exit 127, before `codex login` ever ran.
+#
+# So the install root is fixed and only the state root follows CODEX_HOME.
+# ~/.local/bin/codex still stays out of it: Codex rewrites that alias on every
+# install or update as a path absolute under the CODEX_HOME that wrote it, so it
+# dangles anywhere ~/.local is shared between machines. $HOME/.codex is relative
+# to whichever machine is asking, so it resolves on all of them.
+CODEX_BIN="$HOME/.codex/packages/standalone/current/bin/codex"
+
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
-CODEX_BIN="$CODEX_ROOT/packages/standalone/current/bin/codex"
 STAMP="$CODEX_ROOT/.active-account-stamp"
 
 if [ ! -x "$CODEX_BIN" ]; then
