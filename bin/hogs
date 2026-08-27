@@ -50,7 +50,7 @@ LXC_DOCKER=/run/current-system/sw/bin/docker   # nested docker path inside NixOS
 # ---------------- t=0 counter snapshot (deltas computed at the end) ----------
 # Taken first so the DEVICE/ZFS sections measure the whole script runtime for
 # free, instead of paying for another sleep.
-SNAP=$(mktemp -d); trap 'rm -rf "$SNAP" "$FLAP"' EXIT
+SNAP=$(mktemp -d); trap 'rm -rf "$SNAP" "$FLAP" "$FLAP2"' EXIT
 T0=$(date +%s%N)
 cp /proc/diskstats "$SNAP/disk0" 2>/dev/null
 zfs_objsets() {   # emits: pool/dataset reads writes nread nwritten
@@ -69,22 +69,22 @@ awk '/^hits /{h=$3} /^misses /{m=$3} END{print h+0, m+0}' \
 
 # ---------------- container map (id->name) + flapping list ----------------
 declare -A NAME
-FLAP=$(mktemp)
+FLAP=$(mktemp); FLAP2=$(mktemp)
 
 scan_env() {            # $1=env label ("" for host); reads docker inspect lines on stdin
-  local env="$1" id nm rc st sid
-  while IFS='|' read -r id nm rc st; do
+  local env="$1" id nm rc st started sid
+  while IFS='|' read -r id nm rc st started; do
     [ -z "$id" ] && continue
     nm=${nm#/}; sid=${id:0:12}
     NAME[$sid]="${env:+$env:}$nm"
     if [ "${rc:-0}" -ge 5 ] 2>/dev/null || [ "$st" = "restarting" ]; then
-      printf '%s\t%s\t%s\t%s\n' "${env:-host}" "$nm" "$rc" "$st" >>"$FLAP"
+      printf '%s\t%s\t%s\t%s\t%s\n' "${env:-host}" "$nm" "$rc" "$st" "$started" >>"$FLAP"
     fi
   done
 }
 inspect_all() {         # $@ = docker invocation; emits id|name|restartcount|status
   local ids; ids=$("$@" ps -aq 2>/dev/null) || return 0
-  [ -n "$ids" ] && "$@" inspect --format '{{.Id}}|{{.Name}}|{{.RestartCount}}|{{.State.Status}}' $ids 2>/dev/null
+  [ -n "$ids" ] && "$@" inspect --format '{{.Id}}|{{.Name}}|{{.RestartCount}}|{{.State.Status}}|{{.State.StartedAt}}' $ids 2>/dev/null
 }
 if command -v docker >/dev/null 2>&1; then
   scan_env "" < <(inspect_all docker)
@@ -147,19 +147,45 @@ if [ "$Z" -gt 0 ]; then
 fi
 
 # ----------------------------- flapping/crash-loops -----------------------------
-# Live loops (restarting / running) sort above dead ones: a container sitting at
-# 50 restarts in state=exited is history, not a fire.
+# RESTARTS is a LIFETIME counter -- on a host up for weeks it says nothing about
+# now. What separates a fire from history is CURRENT uptime: a container running
+# 8h with 38 restarts is stable; one running 40s with 6 is looping.
+LOOP_MAX_UP=600                       # running & younger than this = still looping
 if [ -s "$FLAP" ]; then
+  NOW=$(date +%s)
+  while IFS=$'\t' read -r env nm rc st started; do
+    ups=-1
+    case "$started" in
+      ''|0001-01-01*) ;;
+      *) s=$(date -d "$started" +%s 2>/dev/null) && ups=$(( NOW - s )) ;;
+    esac
+    if   [ "$ups" -lt 0 ];      then up='?'
+    elif [ "$ups" -lt 3600 ];   then up="$((ups/60))m"
+    elif [ "$ups" -lt 172800 ]; then up="$((ups/3600))h"
+    else                             up="$((ups/86400))d"; fi
+    case "$st" in
+      restarting) live=0 ;;
+      running)    if [ "$ups" -ge 0 ] && [ "$ups" -lt "$LOOP_MAX_UP" ]; then live=0; else live=1; fi ;;
+      *)          live=2 ;;
+    esac
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$live" "$env" "$nm" "$rc" "$st" "$up"
+  done <"$FLAP" >"$FLAP2"
+
+  if awk -F'\t' '$1==0{f=1} END{exit !f}' "$FLAP2"; then hdr="CRASH-LOOP / FLAPPING"; else hdr="RESTART HISTORY (nothing looping now)"; fi
   echo
-  echo "=================== CRASH-LOOP / FLAPPING (restarts>=5 or restarting) ==================="
-  printf "%-10s %-30s %10s  %-12s %s\n" "ENV" "CONTAINER" "RESTARTS" "STATE" ""
-  awk -F'\t' '{live=($4=="restarting"||$4=="running")?0:1; print live"\t"$0}' "$FLAP" \
-    | sort -t$'\t' -k1,1n -k4,4rn | head -n "$N" \
-    | while IFS=$'\t' read -r live env nm rc st; do
-        printf "%-10s %-30s %10s  %-12s %s\n" "$env" "$nm" "$rc" "$st" \
-          "$([ "$live" = 0 ] && echo '<- LIVE')"
+  echo "=================== $hdr  (restarts>=5 or restarting) ==================="
+  printf "%-10s %-30s %10s  %-12s %-6s %s\n" "ENV" "CONTAINER" "RESTARTS" "STATE" "UPFOR" ""
+  sort -t$'\t' -k1,1n -k4,4rn "$FLAP2" | head -n "$N" \
+    | while IFS=$'\t' read -r live env nm rc st up; do
+        case "$live" in
+          0) note='<- LIVE (looping now)' ;;
+          1) note='   stable' ;;
+          *) note='' ;;
+        esac
+        printf "%-10s %-30s %10s  %-12s %-6s %s\n" "$env" "$nm" "$rc" "$st" "$up" "$note"
       done
-  echo "  -> 'exited' with high restarts = already dead, not burning CPU now"
+  echo "  -> RESTARTS is lifetime; UPFOR is what matters. 'stable' = high count, but"
+  echo "     running longer than ${LOOP_MAX_UP}s, so the restarts are old history."
 fi
 
 # ----------------------------- top by CPU -----------------------------
