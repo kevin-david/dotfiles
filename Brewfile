@@ -94,7 +94,6 @@ cask "microsoft-edge"
 cask "microsoft-office"         # Word, Excel, PowerPoint, OneNote, Outlook
 cask "mitmproxy"                # HTTPS intercepting proxy
 cask "obsidian"
-cask "onedrive"                 # Microsoft cloud storage sync
 cask "onyx"                     # macOS maintenance and hidden settings
 cask "openmtp"                  # Android MTP file browser
 cask "openscad@snapshot"        # Parametric CAD (snapshot builds)
