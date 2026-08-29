@@ -146,6 +146,7 @@ def env(name: str, default: str) -> str:
 THRESHOLD = int(env("REVIEW_THRESHOLD", "50"))
 HEARTBEAT_SECS = int(env("REVIEW_HEARTBEAT_SECS", "30"))
 ANTIGRAVITY_SCRATCH_ROOT = (Path.home() / ".gemini" / "antigravity-cli" / "scratch").resolve()
+ANTIGRAVITY_BRAIN_ROOT = (Path.home() / ".gemini" / "antigravity-cli" / "brain").resolve()
 LANE_LABELS = {
     "claude": env("REVIEW_CLAUDE_LABEL", "Claude"),
     "codex": env("REVIEW_CODEX_LABEL", "Codex"),
@@ -579,10 +580,7 @@ def _parse_antigravity_stream(
                                 resolved_path,
                                 Path(tempfile.gettempdir()).resolve(),
                             )
-                            or _path_is_within(
-                                resolved_path,
-                                ANTIGRAVITY_SCRATCH_ROOT,
-                            )
+                            or _is_antigravity_scratch_artifact(resolved_path)
                         ):
                             continue
                         try:
@@ -611,9 +609,7 @@ def _parse_antigravity_stream(
         )
     if outside_paths:
         paths = ", ".join(sorted(outside_paths))
-        trust_issues.append(
-            f"Antigravity lane rejected: repository tools escaped the review worktree: {paths}"
-        )
+        trust_issues.append(f"Antigravity lane rejected: repository tools escaped the review worktree: {paths}")
     result_issues: list[str] = []
     if result_status != "SUCCESS":
         detail = f": {result_error}" if result_error else ""
@@ -636,6 +632,16 @@ def _path_is_within(path: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_antigravity_scratch_artifact(path: Path) -> bool:
+    if _path_is_within(path, ANTIGRAVITY_SCRATCH_ROOT):
+        return True
+    try:
+        relative_path = path.relative_to(ANTIGRAVITY_BRAIN_ROOT)
+    except ValueError:
+        return False
+    return len(relative_path.parts) >= 3 and relative_path.parts[1] == "scratch"
 
 
 LANES = {"claude": lane_claude, "codex": lane_codex, "antigravity": lane_antigravity}
