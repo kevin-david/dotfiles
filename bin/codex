@@ -62,6 +62,102 @@ daemon_running() {
   [ -S "$CODEX_ROOT/app-server-control/app-server-control.sock" ]
 }
 
+daemon_lifecycle_command() {
+  local arg
+  if [ "${1:-}" = remote-control ]; then
+    shift
+    for arg in "$@"; do
+      [ "$arg" = start ] || [ "$arg" = stop ] || continue
+      return 0
+    done
+    return 1
+  fi
+
+  if [ "${1:-}" = app-server ] && [ "${2:-}" = daemon ]; then
+    shift 2
+    for arg in "$@"; do
+      case "$arg" in
+        bootstrap|start|restart|enable-remote-control|disable-remote-control|stop) return 0 ;;
+      esac
+    done
+  fi
+  return 1
+}
+
+pid_record_value() {
+  local file="$1" field="$2"
+  sed -n "s/.*\"$field\":[[:space:]]*\"\{0,1\}\([^\",}]*\).*/\1/p" "$file" | head -1
+}
+
+process_start_time() {
+  ps -p "$1" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+process_status_value() {
+  sed -n "s/^$2:[[:space:]]*\([^[:space:]]*\).*/\1/p" "/proc/$1/status" 2>/dev/null
+}
+
+# Codex 0.153.2 can leave a stopped app-server as a zombie below the durable
+# pid-update-loop. Its PID remains valid while its control socket is gone, so
+# both daemon start and stop wait for state that cannot arrive. Stop only the
+# recorded manager, and only after every local identity check matches.
+recover_unreaped_daemon() {
+  local daemon_pid_file="$CODEX_ROOT/app-server-daemon/app-server.pid"
+  local updater_pid_file="$CODEX_ROOT/app-server-daemon/app-server-updater.pid"
+  local socket="$CODEX_ROOT/app-server-control/app-server-control.sock"
+  local daemon_pid updater_pid daemon_start updater_start
+  local updater_exe
+  local -a updater_argv=()
+
+  [ ! -S "$socket" ] || return 0
+  [ -r "$daemon_pid_file" ] && [ -r "$updater_pid_file" ] || return 0
+
+  daemon_pid="$(pid_record_value "$daemon_pid_file" pid)"
+  updater_pid="$(pid_record_value "$updater_pid_file" pid)"
+  daemon_start="$(pid_record_value "$daemon_pid_file" processStartTime)"
+  updater_start="$(pid_record_value "$updater_pid_file" processStartTime)"
+  [[ "$daemon_pid" =~ ^[0-9]+$ ]] && [[ "$updater_pid" =~ ^[0-9]+$ ]] || return 0
+  [ -r "/proc/$daemon_pid/status" ] && [ -r "/proc/$updater_pid/status" ] || return 0
+
+  [ "$(process_status_value "$daemon_pid" State)" = Z ] || return 0
+  [ "$(process_status_value "$daemon_pid" PPid)" = "$updater_pid" ] || return 0
+  [ "$(process_status_value "$daemon_pid" Uid)" = "$(id -u)" ] || return 0
+  [ "$(process_status_value "$updater_pid" Uid)" = "$(id -u)" ] || return 0
+  [ "$(process_start_time "$daemon_pid")" = "$daemon_start" ] || return 0
+  [ "$(process_start_time "$updater_pid")" = "$updater_start" ] || return 0
+
+  updater_exe="$(readlink -f "/proc/$updater_pid/exe" 2>/dev/null || true)"
+  case "$updater_exe" in
+    "$HOME/.codex/packages/standalone/"*/bin/codex) ;;
+    *) return 0 ;;
+  esac
+
+  mapfile -d '' -t updater_argv < "/proc/$updater_pid/cmdline"
+  [ "${#updater_argv[@]}" -eq 4 ] || return 0
+  [ "${updater_argv[1]}" = app-server ] || return 0
+  [ "${updater_argv[2]}" = daemon ] || return 0
+  [ "${updater_argv[3]}" = pid-update-loop ] || return 0
+
+  echo "codex: recovering unreaped app-server PID $daemon_pid by stopping daemon manager PID $updater_pid." >&2
+  kill "$updater_pid"
+
+  local attempt state
+  for attempt in {1..50}; do
+    [ ! -e "/proc/$updater_pid/status" ] && break
+    state="$(process_status_value "$updater_pid" State)"
+    [ "$state" = Z ] && break
+    sleep 0.1
+  done
+  if [ -e "/proc/$updater_pid/status" ] && [ "$(process_status_value "$updater_pid" State)" != Z ]; then
+    echo "codex: daemon manager PID $updater_pid did not stop after 5 seconds." >&2
+    return 1
+  fi
+}
+
+if daemon_lifecycle_command "$@"; then
+  recover_unreaped_daemon
+fi
+
 key="$(active_account_key || true)"
 if [ -n "$key" ]; then
   if [ ! -f "$STAMP" ]; then
