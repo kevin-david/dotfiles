@@ -17,7 +17,7 @@ multi_model_review = importlib.import_module("multi_model_review")
 
 class LaneConfigurationTest(unittest.TestCase):
     def test_default_reviewer_presets_keep_effort_with_its_harness(self) -> None:
-        self.assertEqual(multi_model_review.LANE_MODELS["claude"], "fable")
+        self.assertEqual(multi_model_review.LANE_MODELS["claude"], "claude-fable-5-1")
         self.assertEqual(multi_model_review.CLAUDE_FALLBACK_MODEL, "opus")
         self.assertEqual(multi_model_review.LANE_EFFORTS["claude"], "high")
         self.assertEqual(multi_model_review.LANE_MODELS["codex"], "gpt-5.6-sol")
@@ -42,7 +42,7 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertNotIn(prompt, claude_cmd)
         self.assertIn("claude.prompt", claude_cmd[2])
         self.assertEqual(claude_cmd[3:7], ["--permission-mode", "bypassPermissions", "--effort", "high"])
-        self.assertEqual(claude_cmd[-2:], ["--model", "fable"])
+        self.assertEqual(claude_cmd[-2:], ["--model", "claude-fable-5-1"])
         self.assertNotIn(prompt, codex_cmd)
         self.assertIn("codex.prompt", codex_cmd[-1])
         self.assertIn('model_reasoning_effort="high"', codex_cmd)
@@ -60,8 +60,8 @@ class LaneConfigurationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             with (
-                patch.dict(multi_model_review.LANE_MODELS, {"claude": "fable"}),
-                patch.dict(multi_model_review.LANE_EFFECTIVE_MODELS, {"claude": "fable"}),
+                patch.dict(multi_model_review.LANE_MODELS, {"claude": "claude-fable-5-1"}),
+                patch.dict(multi_model_review.LANE_EFFECTIVE_MODELS, {"claude": "claude-fable-5-1"}),
                 patch.object(multi_model_review, "run", side_effect=[unavailable, reviewed]) as run,
             ):
                 result = multi_model_review.lane_claude("prompt", td, out)
@@ -69,9 +69,28 @@ class LaneConfigurationTest(unittest.TestCase):
                 effective_tag = multi_model_review.tag_for("claude")
 
         self.assertEqual(result, multi_model_review.LaneResult("review", 0, ""))
-        self.assertEqual(commands[0][commands[0].index("--model") + 1], "fable")
+        self.assertEqual(commands[0][commands[0].index("--model") + 1], "claude-fable-5-1")
         self.assertEqual(commands[1][commands[1].index("--model") + 1], "opus")
         self.assertEqual(effective_tag, "[Claude (opus / high)]")
+
+    def test_claude_retries_once_when_primary_model_is_rejected(self) -> None:
+        rejected_messages = (
+            "There's an issue with the selected model (fable). It may not exist or you may not have access to it.",
+            "Claude Code 2.1.168 does not support this model; version 2.1.251 or newer is required.",
+        )
+        reviewed = CompletedProcess(args=[], returncode=0, stdout="review", stderr="")
+
+        for message in rejected_messages:
+            rejected = CompletedProcess(args=[], returncode=1, stdout=message, stderr="")
+            with (
+                self.subTest(message=message),
+                tempfile.TemporaryDirectory() as td,
+                patch.object(multi_model_review, "run", side_effect=[rejected, reviewed]) as run,
+            ):
+                result = multi_model_review.lane_claude("prompt", td, Path(td))
+
+            self.assertEqual(result, multi_model_review.LaneResult("review", 0, ""))
+            self.assertEqual(run.call_count, 2)
 
     def test_claude_fails_without_postable_output_when_fallback_is_unavailable(self) -> None:
         unavailable = CompletedProcess(

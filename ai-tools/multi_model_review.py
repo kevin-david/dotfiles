@@ -153,7 +153,7 @@ LANE_LABELS = {
     "antigravity": env("REVIEW_ANTIGRAVITY_LABEL", "Antigravity"),
 }
 LANE_MODELS = {
-    "claude": env("REVIEW_CLAUDE_MODEL", "fable"),
+    "claude": env("REVIEW_CLAUDE_MODEL", "claude-fable-5-1"),
     "codex": env("REVIEW_CODEX_MODEL", "gpt-5.6-sol"),
     "antigravity": env("REVIEW_ANTIGRAVITY_MODEL", "Gemini 3.1 Pro (High)"),
 }
@@ -365,7 +365,15 @@ def _claude_model_unavailable(result: CompletedProcess[str]) -> bool:
     response = f"{result.stdout}\n{result.stderr}".lower()
     reached_limit = "reached your" in response and " limit" in response
     missing_model = "model" in response and any(
-        marker in response for marker in ("not available", "unavailable", "not found", "unknown model")
+        marker in response
+        for marker in (
+            "not available",
+            "unavailable",
+            "not found",
+            "unknown model",
+            "may not exist",
+            "does not support this model",
+        )
     )
     return reached_limit or missing_model
 
