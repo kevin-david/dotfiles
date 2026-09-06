@@ -344,7 +344,29 @@ def _prompt_file_instruction(prompt_path: Path) -> str:
     return f"Read the complete review instructions from `{prompt_path}` and follow them exactly."
 
 
-def _claude_command(prompt: str, model: str) -> list[str]:
+def session_id_from_output(lane: str, raw: str) -> str:
+    """Read the native identity; absence or conflicting identities cannot select a session."""
+    ids: set[str] = set()
+    for line in raw.splitlines():
+        with contextlib.suppress(json.JSONDecodeError):
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                continue
+            value = None
+            if lane == "claude":
+                value = event.get("session_id")
+            elif lane == "codex" and event.get("type") == "thread.started":
+                value = event.get("thread_id")
+            elif lane == "antigravity" and event.get("event") == "init":
+                value = event.get("conversation_id")
+            if isinstance(value, str) and value:
+                ids.add(value)
+    if len(ids) != 1:
+        raise ValueError(f"{lane}: expected one native session ID, found {len(ids)}")
+    return ids.pop()
+
+
+def _claude_command(prompt: str, model: str, session_id: str | None = None) -> list[str]:
     cmd = [
         "claude",
         "-p",
@@ -354,6 +376,9 @@ def _claude_command(prompt: str, model: str) -> list[str]:
         "--effort",
         LANE_EFFORTS["claude"],
     ]
+    cmd += ["--output-format", "json"]
+    if session_id:
+        cmd += ["--resume", session_id]
     if model:
         cmd += ["--model", model]
     return cmd
@@ -378,14 +403,14 @@ def _claude_model_unavailable(result: CompletedProcess[str]) -> bool:
     return reached_limit or missing_model
 
 
-def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
+def lane_claude(prompt: str, wt: str, out: Path, *, session_id: str | None = None) -> LaneResult:
     prompt_path = _write_lane_prompt(out, "claude", prompt)
     prompt_instruction = _prompt_file_instruction(prompt_path)
     primary_model = LANE_MODELS["claude"]
-    primary = run(_claude_command(prompt_instruction, primary_model), cwd=wt)
+    primary = run(_claude_command(prompt_instruction, primary_model, session_id), cwd=wt)
     attempts = [(primary_model, primary)]
 
-    if _claude_model_unavailable(primary) and primary_model != CLAUDE_FALLBACK_MODEL:
+    if not session_id and _claude_model_unavailable(primary) and primary_model != CLAUDE_FALLBACK_MODEL:
         print(f"[claude] {primary_model or 'default'} unavailable; retrying once with {CLAUDE_FALLBACK_MODEL}")
         fallback = run(_claude_command(prompt_instruction, CLAUDE_FALLBACK_MODEL), cwd=wt)
         attempts.append((CLAUDE_FALLBACK_MODEL, fallback))
@@ -412,10 +437,18 @@ def lane_claude(prompt: str, wt: str, out: Path) -> LaneResult:
         for model, attempt in attempts
     )
     (out / "claude.err").write_text(error_log)
-    return LaneResult(primary.stdout, primary.returncode, primary.stderr)
+    (out / "claude.stdout").write_text(primary.stdout)
+    response = primary.stdout
+    code = primary.returncode
+    if response.lstrip().startswith("{"):
+        envelope = json.loads(response)
+        response = envelope.get("result", "")
+        if envelope.get("is_error"):
+            code = code or 1
+    return LaneResult(response, code, primary.stderr)
 
 
-def lane_codex(prompt: str, wt: str, out: Path) -> LaneResult:
+def lane_codex(prompt: str, wt: str, out: Path, *, session_id: str | None = None) -> LaneResult:
     prompt_path = _write_lane_prompt(out, "codex", prompt)
     last = out / "codex.last"
     cmd = [
@@ -425,6 +458,8 @@ def lane_codex(prompt: str, wt: str, out: Path) -> LaneResult:
         "read-only",
         "-C",
         wt,
+        *(["resume", session_id] if session_id else []),
+        "--json",
         "-c",
         f'model_reasoning_effort="{LANE_EFFORTS["codex"]}"',
         "--output-last-message",
@@ -434,13 +469,14 @@ def lane_codex(prompt: str, wt: str, out: Path) -> LaneResult:
         cmd += ["-m", LANE_MODELS["codex"]]
     cmd += [_prompt_file_instruction(prompt_path)]
     p = run(cmd)
+    (out / "codex.stdout").write_text(p.stdout)
     (out / "codex.err").write_text(p.stderr)
     # codex writes its final message to `last`; stdout is the event log.
     text = last.read_text() if last.exists() else p.stdout
     return LaneResult(text, p.returncode, p.stderr)
 
 
-def lane_antigravity(prompt: str, wt: str, out: Path) -> LaneResult:
+def lane_antigravity(prompt: str, wt: str, out: Path, *, session_id: str | None = None) -> LaneResult:
     # The review worktree is a fresh throwaway dir Antigravity has never "trusted",
     # so it downgrades to default approval and refuses tool calls headlessly.
     # --dangerously-skip-permissions bypasses approval prompts.
@@ -471,7 +507,7 @@ Antigravity final-output override:
     instruction_path.write_text(grounded_prompt)
     schema_path = (out / "antigravity.schema.json").resolve()
     schema_path.write_text(json.dumps(ANTIGRAVITY_REVIEW_SCHEMA, separators=(",", ":")))
-    for attempt in (1, 2):
+    for attempt in (1,) if session_id else (1, 2):
         attempt_prompt = f"""\
 Read the complete review instructions from `{instruction_path}` and follow them exactly.
 Before inspecting the repository, run exactly: `{provenance_cmd}`
@@ -495,10 +531,12 @@ Its output must be exactly `{expected_head}`. If it differs, stop and report fai
             "--print-timeout",
             "10m",
         ]
+        if session_id:
+            cmd += ["--conversation", session_id]
         if LANE_MODELS["antigravity"]:
             cmd += ["--model", LANE_MODELS["antigravity"]]
         p = run(cmd, cwd=wt)
-        if attempt == 1 and _antigravity_retryable_error(p.stdout) is not None:
+        if not session_id and attempt == 1 and _antigravity_retryable_error(p.stdout) is not None:
             (out / "antigravity.attempt1.stream.jsonl").write_text(p.stdout)
             (out / "antigravity.attempt1.err").write_text(p.stderr)
             print("[antigravity] generation timed out; retrying once with a fresh conversation")
@@ -510,6 +548,13 @@ Its output must be exactly `{expected_head}`. If it differs, stop and report fai
             worktree=worktree,
             provenance_cmd=provenance_cmd,
             expected_head=expected_head,
+            allowed_artifacts=frozenset(
+                {
+                    instruction_path,
+                    schema_path,
+                    *((out.parent / "antigravity.prompt",) if session_id else ()),
+                }
+            ),
         )
         errors = [part for part in (p.stderr.strip(), stream_error) if part]
         if p.returncode != 0 and not errors:
@@ -547,6 +592,7 @@ def _parse_antigravity_stream(
     worktree: Path,
     provenance_cmd: str,
     expected_head: str,
+    allowed_artifacts: frozenset[Path] = frozenset(),
 ) -> tuple[str, str | None]:
     """Extract the final response and prove Antigravity used the intended checkout."""
     provenance_ok = False
@@ -584,11 +630,7 @@ def _parse_antigravity_stream(
                             continue
                         resolved_path = Path(value).resolve()
                         if normalized_key in {"absolutepath", "path"} and (
-                            _path_is_within(
-                                resolved_path,
-                                Path(tempfile.gettempdir()).resolve(),
-                            )
-                            or _is_antigravity_scratch_artifact(resolved_path)
+                            resolved_path in allowed_artifacts or _is_antigravity_scratch_artifact(resolved_path)
                         ):
                             continue
                         try:
@@ -1342,6 +1384,21 @@ def main() -> None:
     # switched out from under them. The worktree is removed on exit.
     run_ok(["git", "worktree", "add", "--detach", wt, head])
 
+    (out / "run.json").write_text(
+        json.dumps(
+            {
+                "pr": pr,
+                "slug": slug,
+                "head": head,
+                "base": base,
+                "base_ref": base_ref,
+                "worktree": wt,
+                "review_kind": args.review_kind,
+                "codex_home": str(Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser().resolve()),
+            },
+            indent=2,
+        )
+    )
     repo_files = set(run_ok(["git", "-C", wt, "ls-files"]).splitlines())
     repo_files.update(run_ok(["git", "ls-tree", "-r", "--name-only", base]).splitlines())
     ctx = ReviewCtx(
@@ -1391,6 +1448,25 @@ def main() -> None:
                         results[lane] = LaneResult("", 1, str(e))
                     print(f"[{lane}] finished in {int(done[lane] - start[lane])}s")
                     (out / f"{lane}.raw").write_text(results[lane].out)
+                    if results[lane].code or not results[lane].out.strip():
+                        print(f"[{lane}] follow-up unavailable: original lane failed")
+                        continue
+                    native = out / ("antigravity.stream.jsonl" if lane == "antigravity" else f"{lane}.stdout")
+                    try:
+                        identity = session_id_from_output(lane, native.read_text())
+                    except (ValueError, OSError) as error:
+                        print(f"[{lane}] follow-up unavailable: {error}", file=sys.stderr)
+                    else:
+                        (out / f"{lane}.session.json").write_text(
+                            json.dumps(
+                                {
+                                    "session_id": identity,
+                                    "model": LANE_EFFECTIVE_MODELS[lane],
+                                    "effort": LANE_EFFORTS.get(lane),
+                                },
+                                indent=2,
+                            )
+                        )
         finally:
             stop.set()
             hb.join(timeout=1)

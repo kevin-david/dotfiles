@@ -535,7 +535,7 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(response, "")
         self.assertIn("escaped the review worktree", error or "")
 
-    def test_antigravity_allows_scratch_file_in_system_temp_directory(self) -> None:
+    def test_antigravity_rejects_unrelated_temp_file_but_allows_explicit_artifact(self) -> None:
         expected_head = "a" * 40
         provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
         stream = "\n".join(
@@ -576,6 +576,15 @@ class LaneConfigurationTest(unittest.TestCase):
             expected_head=expected_head,
         )
 
+        self.assertEqual(response, "")
+        self.assertIn("escaped the review worktree", error or "")
+        response, error = multi_model_review._parse_antigravity_stream(
+            stream,
+            worktree=Path("/tmp/review-worktree"),
+            provenance_cmd=provenance_cmd,
+            expected_head=expected_head,
+            allowed_artifacts=frozenset({Path("/tmp/old_rfq_read_service.py")}),
+        )
         self.assertEqual(response, "review")
         self.assertIsNone(error)
 
