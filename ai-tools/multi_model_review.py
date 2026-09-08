@@ -255,9 +255,39 @@ def die(msg: str) -> NoReturn:
     raise SystemExit(1)
 
 
-def run(cmd: list[str], *, cwd: str | Path | None = None, input: str | None = None) -> CompletedProcess[str]:
-    """Run a command, capturing text output. Does not raise on nonzero."""
-    return subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=cwd, input=input)
+def run(
+    cmd: list[str],
+    *,
+    cwd: str | Path | None = None,
+    input: str | None = None,
+    output_files: tuple[Path, Path] | None = None,
+) -> CompletedProcess[str]:
+    """Persist reviewer output while it runs; ordinary commands capture in memory."""
+    if output_files is None:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=cwd, input=input)
+    stdout_path, stderr_path = output_files
+    # Direct file descriptors preserve even partial lines if the orchestrator is
+    # terminated, without depending on a reader thread or a pipe being drained.
+    with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        result = subprocess.run(cmd, stdout=stdout, stderr=stderr, text=True, check=False, cwd=cwd, input=input)
+    return CompletedProcess(cmd, result.returncode, stdout_path.read_text(), stderr_path.read_text())
+
+
+def lane_output_activity(lane: str, out: Path) -> str:
+    """Describe observed output only; quiet reasoning cannot be identified as a hang."""
+    native_name = "antigravity.stream.jsonl" if lane == "antigravity" else f"{lane}.stdout"
+    files = (out / native_name, out / f"{lane}.err")
+    stats = []
+    for path in files:
+        with contextlib.suppress(FileNotFoundError):
+            stat = path.stat()
+            if stat.st_size:
+                stats.append(stat)
+    if not stats:
+        return "no output observed yet"
+    age = max(0, int(time.time() - max(stat.st_mtime for stat in stats)))
+    size = sum(stat.st_size for stat in stats)
+    return f"{size} output bytes; last output {age}s ago"
 
 
 def run_ok(cmd: list[str]) -> str:
@@ -376,7 +406,7 @@ def _claude_command(prompt: str, model: str, session_id: str | None = None) -> l
         "--effort",
         LANE_EFFORTS["claude"],
     ]
-    cmd += ["--output-format", "json"]
+    cmd += ["--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     if session_id:
         cmd += ["--resume", session_id]
     if model:
@@ -387,13 +417,21 @@ def _claude_command(prompt: str, model: str, session_id: str | None = None) -> l
 def _claude_invocation_failed(result: CompletedProcess[str]) -> bool:
     if result.returncode != 0:
         return True
-    if SENTINEL_OPEN in result.stdout:
-        return False
-    with contextlib.suppress(json.JSONDecodeError):
-        envelope = json.loads(result.stdout)
-        if isinstance(envelope, dict) and envelope.get("is_error"):
+    response = result.stdout
+    if response.lstrip().startswith("{"):
+        # Streaming tool output can quote a model error without the reviewer
+        # itself failing. Only the terminal result can trigger the fallback.
+        events = [json.loads(line) for line in response.splitlines() if line.strip()]
+        terminal = next(
+            (event for event in reversed(events) if event.get("type") == "result" or "result" in event),
+            None,
+        )
+        if terminal is not None and terminal.get("is_error"):
             return True
-    response = f"{result.stdout}\n{result.stderr}".lower()
+        response = json.dumps(terminal) if terminal is not None else ""
+    if SENTINEL_OPEN in response:
+        return False
+    response = f"{response}\n{result.stderr}".lower()
     reached_limit = any(marker in response for marker in ("reached your", "hit your")) and " limit" in response
     missing_model = "model" in response and any(
         marker in response
@@ -413,12 +451,22 @@ def lane_claude(prompt: str, wt: str, out: Path, *, session_id: str | None = Non
     prompt_path = _write_lane_prompt(out, "claude", prompt)
     prompt_instruction = _prompt_file_instruction(prompt_path)
     primary_model = LANE_MODELS["claude"]
-    primary = run(_claude_command(prompt_instruction, primary_model, session_id), cwd=wt)
+    primary = run(
+        _claude_command(prompt_instruction, primary_model, session_id),
+        cwd=wt,
+        output_files=(out / "claude.stdout", out / "claude.err"),
+    )
     attempts = [(primary_model, primary)]
 
     if not session_id and _claude_invocation_failed(primary) and primary_model != CLAUDE_FALLBACK_MODEL:
         print(f"[claude] {primary_model or 'default'} failed; retrying once with {CLAUDE_FALLBACK_MODEL}")
-        fallback = run(_claude_command(prompt_instruction, CLAUDE_FALLBACK_MODEL), cwd=wt)
+        (out / "claude.attempt1.stdout").write_text(primary.stdout)
+        (out / "claude.attempt1.err").write_text(primary.stderr)
+        fallback = run(
+            _claude_command(prompt_instruction, CLAUDE_FALLBACK_MODEL),
+            cwd=wt,
+            output_files=(out / "claude.stdout", out / "claude.err"),
+        )
         attempts.append((CLAUDE_FALLBACK_MODEL, fallback))
         if not _claude_invocation_failed(fallback):
             LANE_EFFECTIVE_MODELS["claude"] = CLAUDE_FALLBACK_MODEL
@@ -443,14 +491,23 @@ def lane_claude(prompt: str, wt: str, out: Path, *, session_id: str | None = Non
         for model, attempt in attempts
     )
     (out / "claude.err").write_text(error_log)
-    (out / "claude.stdout").write_text(primary.stdout)
     response = primary.stdout
     code = primary.returncode
     if response.lstrip().startswith("{"):
-        envelope = json.loads(response)
-        response = envelope.get("result", "")
-        if envelope.get("is_error"):
-            code = code or 1
+        # Older archived output is one result envelope; streaming output also
+        # includes tool calls and partial messages, none of which is the review.
+        envelopes = [json.loads(line) for line in response.splitlines() if line.strip()]
+        final = next(
+            (event for event in reversed(envelopes) if event.get("type") == "result" or "result" in event),
+            None,
+        )
+        if final is None:
+            return LaneResult("", code or 1, primary.stderr or "Claude stream ended without a result event")
+        if final.get("is_error"):
+            return LaneResult("", code or 1, primary.stderr or json.dumps(final))
+        if "result" not in final:
+            return LaneResult("", code or 1, "Claude result event omitted the review")
+        response = final["result"]
     return LaneResult(response, code, primary.stderr)
 
 
@@ -474,9 +531,7 @@ def lane_codex(prompt: str, wt: str, out: Path, *, session_id: str | None = None
     if LANE_MODELS["codex"]:
         cmd += ["-m", LANE_MODELS["codex"]]
     cmd += [_prompt_file_instruction(prompt_path)]
-    p = run(cmd)
-    (out / "codex.stdout").write_text(p.stdout)
-    (out / "codex.err").write_text(p.stderr)
+    p = run(cmd, output_files=(out / "codex.stdout", out / "codex.err"))
     # codex writes its final message to `last`; stdout is the event log.
     text = last.read_text() if last.exists() else p.stdout
     return LaneResult(text, p.returncode, p.stderr)
@@ -547,14 +602,13 @@ Its output must be exactly `{expected_head}`. If it differs, stop and report fai
             cmd += ["--conversation", session_id]
         if LANE_MODELS["antigravity"]:
             cmd += ["--model", LANE_MODELS["antigravity"]]
-        p = run(cmd, cwd=wt)
+        p = run(cmd, cwd=wt, output_files=(out / "antigravity.stream.jsonl", out / "antigravity.err"))
         if not session_id and attempt == 1 and _antigravity_retryable_error(p.stdout) is not None:
             (out / "antigravity.attempt1.stream.jsonl").write_text(p.stdout)
             (out / "antigravity.attempt1.err").write_text(p.stderr)
             print("[antigravity] generation timed out; retrying once with a fresh conversation")
             continue
 
-        (out / "antigravity.stream.jsonl").write_text(p.stdout)
         response, stream_error = _parse_antigravity_stream(
             p.stdout,
             worktree=worktree,
@@ -1430,9 +1484,8 @@ def main() -> None:
             for lane in lanes
         }
         # Run lanes in parallel; each harness explores the worktree independently.
-        # The lanes capture each CLI's output in memory (no growing file to
-        # watch), so a heartbeat reports per-lane elapsed time — enough to tell a
-        # live-but-slow run from a hung one. It can't see *what* a lane is doing.
+        # Native output grows on disk throughout each lane, including partial
+        # messages. Output age is evidence to inspect, not a liveness verdict.
         results: dict[str, LaneResult] = {}
         start = {lane: time.monotonic() for lane in lanes}
         done: dict[str, float] = {}
@@ -1443,7 +1496,7 @@ def main() -> None:
                 now = time.monotonic()
                 active = [(lane, now - start[lane]) for lane in lanes if lane not in done]
                 if active:
-                    parts = ", ".join(f"{lane} ({int(s)}s)" for lane, s in active)
+                    parts = ", ".join(f"{lane} ({int(s)}s; {lane_output_activity(lane, out)})" for lane, s in active)
                     print(f"  … still running: {parts}")
 
         hb = threading.Thread(target=heartbeat, daemon=True)
