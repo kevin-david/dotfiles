@@ -485,6 +485,7 @@ def lane_antigravity(prompt: str, wt: str, out: Path, *, session_id: str | None 
     expected_head = run_ok(["git", "-C", str(worktree), "rev-parse", "HEAD"]).strip()
     provenance_cmd = f"git -C {shlex.quote(str(worktree))} rev-parse HEAD"
     instruction_path = (out / "antigravity.prompt").resolve()
+    diff_path = (out / "antigravity.diff").resolve()
     grounded_prompt = f"""\
 Antigravity execution boundary:
 - The checked-out review worktree is exactly `{worktree}`.
@@ -497,6 +498,11 @@ Antigravity execution boundary:
   pipe, or combine it with another command.
 - Its output must be exactly `{expected_head}`. If it differs, stop and report failure.
 - Run every later repository command with its Cwd inside `{worktree}`.
+- If the diff is too large for command output, export it from this checkout to
+  `{diff_path}` and read that exact file. This is the only permitted diff-export
+  path outside the worktree; do not invent another `/tmp` path or use CLI scratch state.
+- Keep repository file reads and searches inside `{worktree}`. The instruction
+  file and designated diff export are artifacts, not alternative source checkouts.
 {prompt}
 
 Antigravity final-output override:
@@ -552,6 +558,7 @@ Its output must be exactly `{expected_head}`. If it differs, stop and report fai
                 {
                     instruction_path,
                     schema_path,
+                    diff_path,
                     *((out.parent / "antigravity.prompt",) if session_id else ()),
                 }
             ),

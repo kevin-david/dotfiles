@@ -323,6 +323,18 @@ class LaneConfigurationTest(unittest.TestCase):
                     ),
                     json.dumps(
                         {
+                            "event": "step_update",
+                            "step_update": {
+                                "state": "DONE",
+                                "tool_info": {
+                                    "name": "view_file",
+                                    "parameters": {"AbsolutePath": str(out / "antigravity.diff")},
+                                },
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
                             "event": "result",
                             "result": {
                                 "status": "SUCCESS",
@@ -346,6 +358,7 @@ class LaneConfigurationTest(unittest.TestCase):
                 self.assertIn(str(instruction_path), cmd[cmd.index("-p") + 1])
                 self.assertNotIn("checkpoint recovery contract marker", cmd[cmd.index("-p") + 1])
                 self.assertIn("transcript", instructions.lower())
+                self.assertIn(str(out / "antigravity.diff"), instructions)
                 self.assertIn("For every changed", instructions)
                 self.assertIn("top-level directory", instructions)
                 schema_path = Path(cmd[cmd.index("--json-schema") + 1])
