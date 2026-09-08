@@ -15,6 +15,12 @@ script/bootstrap
 This will symlink the appropriate files in `.dotfiles` to your home directory.
 Everything is configured and tweaked within `~/.dotfiles`.
 
+Atuin settings live in `atuin/config.toml`. Both `script/bootstrap` and
+`script/install` link them to `~/.config/atuin/config.toml` (respecting
+`XDG_CONFIG_HOME` or `ATUIN_CONFIG_DIR`). Existing configs are backed up beside
+the destination before linking. To install just these settings, run
+`./atuin/install.sh`.
+
 The main file you'll want to change right off the bat is `zsh/zshrc.symlink`,
 which sets up a few paths that'll be different on your particular machine.
 
