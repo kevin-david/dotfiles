@@ -14,6 +14,7 @@ Posting policy:
   - Public repos          -> report-only by default (opt in with --post).
   - Private/internal repos -> post automatically ("let it fly").
   - --post / --report override the visibility default.
+  - --post-saved <dir>    -> post what a finished run already saved, running no lane.
 
 GitHub access is via the `gh` CLI (reuses your existing auth — no token
 handling, no extra dependency). Stdlib only.
@@ -273,10 +274,14 @@ def run(
     return CompletedProcess(cmd, result.returncode, stdout_path.read_text(), stderr_path.read_text())
 
 
+def native_output_path(lane: str, out: Path) -> Path:
+    """The lane CLI's own event log; Antigravity streams JSONL under its own name."""
+    return out / ("antigravity.stream.jsonl" if lane == "antigravity" else f"{lane}.stdout")
+
+
 def lane_output_activity(lane: str, out: Path) -> str:
     """Describe observed output only; quiet reasoning cannot be identified as a hang."""
-    native_name = "antigravity.stream.jsonl" if lane == "antigravity" else f"{lane}.stdout"
-    files = (out / native_name, out / f"{lane}.err")
+    files = (native_output_path(lane, out), out / f"{lane}.err")
     stats = []
     for path in files:
         with contextlib.suppress(FileNotFoundError):
@@ -288,6 +293,120 @@ def lane_output_activity(lane: str, out: Path) -> str:
     age = max(0, int(time.time() - max(stat.st_mtime for stat in stats)))
     size = sum(stat.st_size for stat in stats)
     return f"{size} output bytes; last output {age}s ago"
+
+
+# A supervising agent must not have to read the native event logs to see where a
+# lane stands: those reach megabytes on a long review (a Codex lane commonly
+# streams 0.5-2MB of JSONL), and the Claude CLI emits its whole stream-json run
+# as a single terminal event, so reading it mid-run shows nothing at all
+# (observed 2026-09). `progress.txt` carries the same standing per lane in a few
+# hundred bytes, rewritten on every heartbeat.
+_PROGRESS_SCAN_BYTES = 64 * 1024
+_EVENT_DETAIL_CHARS = 160
+
+
+def _clip(value: object) -> str:
+    text = " ".join(str(value).split())
+    return text if len(text) <= _EVENT_DETAIL_CHARS else text[:_EVENT_DETAIL_CHARS] + "…"
+
+
+def _read_tail(path: Path, limit: int) -> str:
+    """The last `limit` bytes, minus a leading partial line when truncated."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - limit))
+            chunk = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    return chunk if size <= limit else chunk.split("\n", 1)[-1]
+
+
+def _parsed_event(line: str) -> Mapping[str, object] | None:
+    with contextlib.suppress(json.JSONDecodeError):
+        event = json.loads(line)
+        if isinstance(event, dict):
+            return cast(Mapping[str, object], event)
+    return None
+
+
+def _describe_event(lane: str, event: Mapping[str, object]) -> str:
+    """Name what the harness was doing, in its own vocabulary; "" when unrecognized."""
+    kind = event.get("type")
+    if lane == "codex":
+        item = event.get("item")
+        if isinstance(item, Mapping) and kind in ("item.started", "item.completed"):
+            state = "started" if kind == "item.started" else "completed"
+            detail = item.get("command") or item.get("text") or ""
+            return f"{state} {item.get('type', 'item')}" + (f": {_clip(detail)}" if detail else "")
+    if lane == "claude":
+        message = event.get("message")
+        if isinstance(message, Mapping):
+            blocks = message.get("content")
+            block = blocks[-1] if isinstance(blocks, list) and blocks else None
+            if isinstance(block, Mapping):
+                if block.get("type") == "tool_use":
+                    return f"tool {block.get('name', 'unknown')}"
+                if text := block.get("text"):
+                    return f"message: {_clip(text)}"
+    if lane == "antigravity":
+        step = event.get("step_update")
+        if isinstance(step, Mapping):
+            return f"step {step.get('step_index')} {step.get('state')} {step.get('step_type')}"
+        if isinstance(event.get("event"), str):
+            return str(event["event"])
+    return str(kind) if isinstance(kind, str) else ""
+
+
+def last_lane_event(lane: str, out: Path) -> str:
+    """The most recent recognizable native event, or "" when there is none yet."""
+    for line in reversed(_read_tail(native_output_path(lane, out), _PROGRESS_SCAN_BYTES).splitlines()):
+        event = _parsed_event(line)
+        if event is not None and (description := _describe_event(lane, event)):
+            return description
+    return ""
+
+
+def lane_session_id(lane: str, out: Path) -> str:
+    """The lane's native session id once it is knowable, else "".
+
+    A finished lane has it recorded; a running one has it in its first events,
+    which is why only the head of the log is scanned.
+    """
+    recorded = out / f"{lane}.session.json"
+    if recorded.exists():
+        with contextlib.suppress(OSError, json.JSONDecodeError, KeyError):
+            return str(json.loads(recorded.read_text())["session_id"])
+    head = native_output_path(lane, out)
+    with contextlib.suppress(OSError, ValueError), head.open("r", encoding="utf-8", errors="replace") as handle:
+        return session_id_from_output(lane, handle.read(_PROGRESS_SCAN_BYTES))
+    return ""
+
+
+def lane_progress(lane: str, out: Path) -> str:
+    """One line of observed progress: output volume and age, latest event, session, error."""
+    parts = [lane_output_activity(lane, out)]
+    if event := last_lane_event(lane, out):
+        parts.append(event)
+    if session := lane_session_id(lane, out):
+        parts.append(f"session {session}")
+    stderr_lines = _read_tail(out / f"{lane}.err", _PROGRESS_SCAN_BYTES).strip().splitlines()
+    if stderr_lines:
+        parts.append(f"stderr: {_clip(stderr_lines[-1])}")
+    return "; ".join(parts)
+
+
+def write_progress_file(out: Path, lanes: list[str], start: Mapping[str, float], done: Mapping[str, float]) -> None:
+    """Rewrite `progress.txt` — the small file a supervising agent reads instead of the event logs."""
+    now = time.monotonic()
+    header = f"# {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} — artifacts: {out}"
+    lines = [header]
+    for lane in lanes:
+        finished = lane in done
+        elapsed = int((done[lane] if finished else now) - start[lane])
+        lines.append(f"{lane}: {'finished' if finished else 'running'} after {elapsed}s — {lane_progress(lane, out)}")
+    (out / "progress.txt").write_text("\n".join(lines) + "\n")
 
 
 def run_ok(cmd: list[str]) -> str:
@@ -1253,6 +1372,116 @@ def submit_pending_reviews_after_inline_failures(ctx: ReviewCtx) -> None:
             )
 
 
+def repo_files_at(wt: str, base: Sha) -> set[str]:
+    """Every path present at head or base — how a hallucinated path is told from a real one."""
+    files = set(run_ok(["git", "-C", wt, "ls-files"]).splitlines())
+    files.update(run_ok(["git", "ls-tree", "-r", "--name-only", base]).splitlines())
+    return files
+
+
+def process_lanes(lanes: list[str], results: dict[str, LaneResult], ctx: ReviewCtx, out: Path) -> None:
+    collect_review_overviews(lanes, results, ctx)
+    post_review_overview(ctx)
+    for lane in lanes:  # sequential posting: stable logs, no API races
+        process_lane(lane, results[lane], ctx, out)
+    submit_pending_reviews_after_inline_failures(ctx)
+
+
+def print_lane_warnings(ctx: ReviewCtx) -> None:
+    if ctx.incomplete:
+        print(f"\n⚠ incomplete reviews (missing required sections): {'; '.join(ctx.incomplete)}", file=sys.stderr)
+    if ctx.failed:
+        print(f"\n⚠ lanes that failed (no review posted): {', '.join(ctx.failed)}", file=sys.stderr)
+
+
+def saved_lane_results(out: Path, lanes: list[str]) -> dict[str, LaneResult]:
+    """Rebuild each finished lane's result from its saved artifacts.
+
+    A lane counts as finished only when both its final message and its recorded
+    exit status are on disk. A lane cancelled mid-run has neither, and inventing
+    an exit status here would turn an unfinished lane into a clean review.
+    """
+    results: dict[str, LaneResult] = {}
+    for lane in lanes:
+        raw, outcome = out / f"{lane}.raw", out / f"{lane}.outcome.json"
+        if not raw.exists() or not outcome.exists():
+            print(f"[{lane}] no finished lane recorded in {out} — skipping", file=sys.stderr)
+            continue
+        recorded = json.loads(outcome.read_text())
+        # Label the posted findings with the model and effort that produced them,
+        # not with whatever this invocation defaults to.
+        LANE_EFFECTIVE_MODELS[lane] = recorded["model"]
+        if recorded["effort"] is not None:
+            LANE_EFFORTS[lane] = recorded["effort"]
+        err = out / f"{lane}.err"
+        results[lane] = LaneResult(
+            raw.read_text(),
+            int(recorded["exit_code"]),
+            err.read_text() if err.exists() else "",
+        )
+    return results
+
+
+def post_saved_review(out: Path, pr: str, lanes: list[str]) -> None:
+    """Post a finished run's saved findings, re-running no lane.
+
+    The alternative is a second full fan-out purely to change delivery, which
+    costs another complete review's tokens for findings already on disk.
+    """
+    recorded_path = out / "run.json"
+    if not recorded_path.exists():
+        die(f"{out} has no run.json — not a review artifact directory")
+    recorded = json.loads(recorded_path.read_text())
+    if str(recorded["pr"]) != pr:
+        die(f"{out} holds a review of PR #{recorded['pr']}, not #{pr}")
+    slug, head, base = str(recorded["slug"]), Sha(recorded["head"]), Sha(recorded["base"])
+
+    # The git work below (worktree, diff) runs against this directory's repo, so
+    # posting from artifacts recorded elsewhere would mix two repositories.
+    current = json.loads(run_ok(["gh", "repo", "view", "--json", "nameWithOwner"]))["nameWithOwner"]
+    if current != slug:
+        die(f"{out} holds a review of {slug}; this directory is {current}")
+
+    live = json.loads(run_ok(["gh", "pr", "view", pr, "--json", "headRefOid,title"]))
+    # Inline comments anchor to the reviewed commit's lines. If the head moved,
+    # those anchors no longer describe the PR, so refuse rather than post
+    # findings that read as current.
+    if live["headRefOid"] != head:
+        die(
+            f"PR #{pr} is now at {live['headRefOid'][:12]}; these artifacts review {head[:12]}. "
+            "Re-run the review against the new head."
+        )
+
+    results = saved_lane_results(out, lanes)
+    if not results:
+        die(f"no finished lane found in {out}")
+
+    if run(["git", "cat-file", "-e", f"{head}^{{commit}}"]).returncode != 0:
+        run(["git", "fetch", "--quiet", "origin", head])
+    wt = tempfile.mkdtemp(prefix=f"pr-{pr}-post.")
+    run_ok(["git", "worktree", "add", "--detach", wt, head])
+    try:
+        ctx = ReviewCtx(
+            mode="post",
+            slug=slug,
+            pr=pr,
+            head=head,
+            diff_lines=diff_commentable_lines(base, head),
+            pr_title=live.get("title", ""),
+            repo_files=repo_files_at(wt, base),
+            worktree=Path(wt),
+        )
+        posting = list(results)
+        print(f"Posting the saved review of PR #{pr} ({slug}) at head {head[:12]} — lanes: {', '.join(posting)}")
+        process_lanes(posting, results, ctx, out)
+    finally:
+        run(["git", "worktree", "remove", "--force", wt])
+
+    print_lane_warnings(ctx)
+    if ctx.failed:
+        raise SystemExit(1)
+
+
 def build_report(ctx: ReviewCtx, base_ref: Ref, base: Sha, lanes: list[str]) -> str:
     """Assemble the per-lane sections into one readable Markdown review."""
     head = [f"# Multi-model review — {ctx.slug} PR #{ctx.pr}"]
@@ -1305,6 +1534,13 @@ def main() -> None:
         "post-nothing mode — use it to preview, or to review "
         "someone else's PR without touching it.",
     )
+    ap.add_argument(
+        "--post-saved",
+        metavar="ARTIFACT_DIR",
+        help="post the findings a finished run already saved in ARTIFACT_DIR, "
+        "re-running no lane. Implies posting. Refuses if the PR head has moved "
+        "since that review.",
+    )
     ap.add_argument("--keep-worktree", action="store_true")
     ap.add_argument(
         "--review-kind",
@@ -1348,9 +1584,23 @@ def main() -> None:
 
     if args.post and args.report is not None:
         die("--post and --report are mutually exclusive")
+    if args.post_saved and args.report is not None:
+        die("--post-saved and --report are mutually exclusive")
     for tool in ("gh", "git"):
         if not shutil.which(tool):
             die(f"{tool} not found")
+
+    requested = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
+    for lane in requested:
+        if lane not in LANES:
+            print(f"unknown lane: {lane} — skipping", file=sys.stderr)
+    requested = [lane for lane in requested if lane in LANES]
+
+    if args.post_saved:
+        # No lane runs here, so the lane CLIs need not be installed.
+        post_saved_review(Path(args.post_saved).expanduser(), args.pr, requested)
+        return
+
     prompt_path = Path(args.prompt).expanduser() if args.prompt else None
 
     pr = args.pr
@@ -1376,12 +1626,8 @@ def main() -> None:
     if meta["isDraft"]:
         print(f"note: PR #{pr} is a draft.", file=sys.stderr)
 
-    requested = [lane.strip() for lane in args.lanes.split(",") if lane.strip()]
-    for lane in requested:
-        if lane not in LANES:
-            print(f"unknown lane: {lane} — skipping", file=sys.stderr)
     lanes = []
-    for lane in (lane for lane in requested if lane in LANES):
+    for lane in requested:
         binary = LANE_BINARIES.get(lane, lane)
         if shutil.which(binary):
             lanes.append(lane)
@@ -1466,8 +1712,6 @@ def main() -> None:
             indent=2,
         )
     )
-    repo_files = set(run_ok(["git", "-C", wt, "ls-files"]).splitlines())
-    repo_files.update(run_ok(["git", "ls-tree", "-r", "--name-only", base]).splitlines())
     ctx = ReviewCtx(
         mode=mode,
         slug=slug,
@@ -1475,7 +1719,7 @@ def main() -> None:
         head=head,
         diff_lines=diff_lines,
         pr_title=meta.get("title", ""),
-        repo_files=repo_files,
+        repo_files=repo_files_at(wt, base),
         worktree=Path(wt),
     )
     try:
@@ -1494,9 +1738,10 @@ def main() -> None:
         def heartbeat() -> None:
             while not stop.wait(HEARTBEAT_SECS):
                 now = time.monotonic()
+                write_progress_file(out, lanes, start, done)
                 active = [(lane, now - start[lane]) for lane in lanes if lane not in done]
                 if active:
-                    parts = ", ".join(f"{lane} ({int(s)}s; {lane_output_activity(lane, out)})" for lane, s in active)
+                    parts = ", ".join(f"{lane} ({int(s)}s; {lane_progress(lane, out)})" for lane, s in active)
                     print(f"  … still running: {parts}")
 
         hb = threading.Thread(target=heartbeat, daemon=True)
@@ -1514,10 +1759,23 @@ def main() -> None:
                         results[lane] = LaneResult("", 1, str(e))
                     print(f"[{lane}] finished in {int(done[lane] - start[lane])}s")
                     (out / f"{lane}.raw").write_text(results[lane].out)
+                    # What actually ran, so a later --post-saved posts these findings
+                    # under the model and effort that produced them, and can tell a
+                    # completed lane from one that never finished, without guessing.
+                    (out / f"{lane}.outcome.json").write_text(
+                        json.dumps(
+                            {
+                                "exit_code": results[lane].code,
+                                "model": LANE_EFFECTIVE_MODELS[lane],
+                                "effort": LANE_EFFORTS.get(lane),
+                            },
+                            indent=2,
+                        )
+                    )
                     if results[lane].code or not results[lane].out.strip():
                         print(f"[{lane}] follow-up unavailable: original lane failed")
                         continue
-                    native = out / ("antigravity.stream.jsonl" if lane == "antigravity" else f"{lane}.stdout")
+                    native = native_output_path(lane, out)
                     try:
                         identity = session_id_from_output(lane, native.read_text())
                     except (ValueError, OSError) as error:
@@ -1536,23 +1794,17 @@ def main() -> None:
         finally:
             stop.set()
             hb.join(timeout=1)
+            write_progress_file(out, lanes, start, done)
 
         print("\n===================== posting / results =====================")
-        collect_review_overviews(lanes, results, ctx)
-        post_review_overview(ctx)
-        for lane in lanes:  # sequential posting: stable logs, no API races
-            process_lane(lane, results[lane], ctx, out)
-        submit_pending_reviews_after_inline_failures(ctx)
+        process_lanes(lanes, results, ctx, out)
     finally:
         if args.keep_worktree:
             print(f"worktree kept at: {wt}", file=sys.stderr)
         else:
             run(["git", "worktree", "remove", "--force", wt])
 
-    if ctx.incomplete:
-        print(f"\n⚠ incomplete reviews (missing required sections): {'; '.join(ctx.incomplete)}", file=sys.stderr)
-    if ctx.failed:
-        print(f"\n⚠ lanes that failed (no review posted): {', '.join(ctx.failed)}", file=sys.stderr)
+    print_lane_warnings(ctx)
 
     if mode != "post":
         report = build_report(ctx, base_ref, base, lanes)
