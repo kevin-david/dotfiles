@@ -546,7 +546,7 @@ class LaneConfigurationTest(unittest.TestCase):
                                 "name": "run_command",
                                 "parameters": {
                                     "CommandLine": "git status",
-                                    "Cwd": "/tmp/antigravity-cli/scratch/repository",
+                                    "Cwd": "/opt/unrelated-checkout",
                                 },
                             },
                         },
@@ -566,7 +566,7 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(response, "")
         self.assertIn("escaped the review worktree", error or "")
 
-    def test_antigravity_rejects_unrelated_temp_file_but_allows_explicit_artifact(self) -> None:
+    def test_antigravity_allows_temp_file_without_explicit_registration(self) -> None:
         expected_head = "a" * 40
         provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
         stream = "\n".join(
@@ -591,7 +591,7 @@ class LaneConfigurationTest(unittest.TestCase):
                             "state": "DONE",
                             "tool_info": {
                                 "name": "view_file",
-                                "parameters": {"AbsolutePath": "/tmp/old_rfq_read_service.py"},
+                                "parameters": {"AbsolutePath": "/tmp/base_component.py"},
                             },
                         },
                     }
@@ -600,24 +600,19 @@ class LaneConfigurationTest(unittest.TestCase):
             ]
         )
 
-        response, error = multi_model_review._parse_antigravity_stream(
-            stream,
-            worktree=Path("/tmp/review-worktree"),
-            provenance_cmd=provenance_cmd,
-            expected_head=expected_head,
-        )
-
-        self.assertEqual(response, "")
-        self.assertIn("escaped the review worktree", error or "")
-        response, error = multi_model_review._parse_antigravity_stream(
-            stream,
-            worktree=Path("/tmp/review-worktree"),
-            provenance_cmd=provenance_cmd,
-            expected_head=expected_head,
-            allowed_artifacts=frozenset({Path("/tmp/old_rfq_read_service.py")}),
-        )
-        self.assertEqual(response, "review")
-        self.assertIsNone(error)
+        for parameter in ("AbsolutePath", "Path", "Cwd", "SearchDirectory", "SearchPath"):
+            for root in (Path("/tmp"), Path(tempfile.gettempdir())):
+                with self.subTest(parameter=parameter, root=root):
+                    response, error = multi_model_review._parse_antigravity_stream(
+                        stream.replace('"AbsolutePath"', json.dumps(parameter)).replace(
+                            "/tmp/base_component.py", str(root / "base_component.py")
+                        ),
+                        worktree=Path("/tmp/review-worktree"),
+                        provenance_cmd=provenance_cmd,
+                        expected_head=expected_head,
+                    )
+                    self.assertEqual(response, "review")
+                    self.assertIsNone(error)
 
     def test_antigravity_allows_file_in_cli_scratch_directory(self) -> None:
         expected_head = "a" * 40

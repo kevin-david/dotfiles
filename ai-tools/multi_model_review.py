@@ -677,12 +677,14 @@ Antigravity execution boundary:
 - That first repository command must contain only that command. Do not append, redirect,
   pipe, or combine it with another command.
 - Its output must be exactly `{expected_head}`. If it differs, stop and report failure.
-- Run every later repository command with its Cwd inside `{worktree}`.
+- Use `{worktree}` for repository inspection. Temporary directories are also allowed
+  for scratch commands, file reads and writes, and searches.
 - If the diff is too large for command output, export it from this checkout to
-  `{diff_path}` and read that exact file. This is the only permitted diff-export
-  path outside the worktree; do not invent another `/tmp` path or use CLI scratch state.
-- Keep repository file reads and searches inside `{worktree}`. The instruction
-  file and designated diff export are artifacts, not alternative source checkouts.
+  `{diff_path}` or another temporary scratch file. You may create and read scratch
+  files under `/tmp` or the system temporary directory, including base-file exports
+  from this checkout.
+- Keep repository file reads and searches inside `{worktree}`. Scratch files and
+  review artifacts are not alternative source checkouts.
 {prompt}
 
 Antigravity final-output override:
@@ -815,6 +817,11 @@ def _parse_antigravity_stream(
                         }:
                             continue
                         resolved_path = Path(value).resolve()
+                        if any(
+                            _path_is_within(resolved_path, root.resolve())
+                            for root in (Path("/tmp"), Path(tempfile.gettempdir()))
+                        ):
+                            continue
                         if normalized_key in {"absolutepath", "path"} and (
                             resolved_path in allowed_artifacts or _is_antigravity_scratch_artifact(resolved_path)
                         ):
