@@ -28,3 +28,10 @@ which sets up a few paths that'll be different on your particular machine.
 defaults, and so on. Tweak this script, and occasionally run `dot` from
 time to time to keep your environment fresh and up-to-date. You can find
 this script in `bin/`.
+
+
+## Review model fallback
+
+`ai-tools/multi_model_review.py` automatically retries a failed initial Claude invocation once with Opus. This covers nonzero exits, CLI error envelopes, unavailable models, and usage or spend limits, including limit messages returned with exit code zero. `--claude-fallback-model` or `REVIEW_CLAUDE_FALLBACK_MODEL` overrides the default fallback.
+
+The retry stays within the Claude lane and preserves both attempt diagnostics. A failed fallback leaves that lane failed; it does not restart completed reviewers. Same-session follow-ups retain their recorded model and do not switch models. Completed structured reviews are not retried merely because their findings mention a limit.

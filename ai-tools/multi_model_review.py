@@ -384,11 +384,17 @@ def _claude_command(prompt: str, model: str, session_id: str | None = None) -> l
     return cmd
 
 
-def _claude_model_unavailable(result: CompletedProcess[str]) -> bool:
+def _claude_invocation_failed(result: CompletedProcess[str]) -> bool:
+    if result.returncode != 0:
+        return True
     if SENTINEL_OPEN in result.stdout:
         return False
+    with contextlib.suppress(json.JSONDecodeError):
+        envelope = json.loads(result.stdout)
+        if isinstance(envelope, dict) and envelope.get("is_error"):
+            return True
     response = f"{result.stdout}\n{result.stderr}".lower()
-    reached_limit = "reached your" in response and " limit" in response
+    reached_limit = any(marker in response for marker in ("reached your", "hit your")) and " limit" in response
     missing_model = "model" in response and any(
         marker in response
         for marker in (
@@ -410,11 +416,11 @@ def lane_claude(prompt: str, wt: str, out: Path, *, session_id: str | None = Non
     primary = run(_claude_command(prompt_instruction, primary_model, session_id), cwd=wt)
     attempts = [(primary_model, primary)]
 
-    if not session_id and _claude_model_unavailable(primary) and primary_model != CLAUDE_FALLBACK_MODEL:
-        print(f"[claude] {primary_model or 'default'} unavailable; retrying once with {CLAUDE_FALLBACK_MODEL}")
+    if not session_id and _claude_invocation_failed(primary) and primary_model != CLAUDE_FALLBACK_MODEL:
+        print(f"[claude] {primary_model or 'default'} failed; retrying once with {CLAUDE_FALLBACK_MODEL}")
         fallback = run(_claude_command(prompt_instruction, CLAUDE_FALLBACK_MODEL), cwd=wt)
         attempts.append((CLAUDE_FALLBACK_MODEL, fallback))
-        if not _claude_model_unavailable(fallback):
+        if not _claude_invocation_failed(fallback):
             LANE_EFFECTIVE_MODELS["claude"] = CLAUDE_FALLBACK_MODEL
             primary = fallback
         else:
@@ -424,7 +430,7 @@ def lane_claude(prompt: str, wt: str, out: Path, *, session_id: str | None = Non
                 stdout="",
                 stderr=fallback.stderr or fallback.stdout,
             )
-    elif _claude_model_unavailable(primary):
+    elif _claude_invocation_failed(primary):
         primary = CompletedProcess(
             args=primary.args,
             returncode=1,
@@ -433,7 +439,7 @@ def lane_claude(prompt: str, wt: str, out: Path, *, session_id: str | None = Non
         )
 
     error_log = "\n\n".join(
-        f"[{model or 'default'}]\n{attempt.stderr or (attempt.stdout if _claude_model_unavailable(attempt) else '')}"
+        f"[{model or 'default'}]\n{attempt.stderr or (attempt.stdout if _claude_invocation_failed(attempt) else '')}"
         for model, attempt in attempts
     )
     (out / "claude.err").write_text(error_log)
@@ -1260,7 +1266,7 @@ def main() -> None:
     ap.add_argument("--claude-model", help="override model for Claude Code")
     ap.add_argument(
         "--claude-fallback-model",
-        help="override the Claude model used once when the primary model is unavailable",
+        help="override the Claude model used once when the initial primary invocation fails",
     )
     ap.add_argument("--codex-model", help="override model for Codex")
     ap.add_argument("--antigravity-model", help="override model for Antigravity")

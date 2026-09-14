@@ -92,6 +92,24 @@ class LaneConfigurationTest(unittest.TestCase):
             self.assertEqual(result, multi_model_review.LaneResult("review", 0, ""))
             self.assertEqual(run.call_count, 2)
 
+    def test_claude_uses_opus_for_spend_limit_and_error_envelope(self) -> None:
+        for output in (
+            "You've hit your monthly spend limit. Switch to another model to continue.",
+            json.dumps({"is_error": True, "result": "request failed"}),
+        ):
+            failed = CompletedProcess(args=[], returncode=0, stdout=output, stderr="")
+            reviewed = CompletedProcess(args=[], returncode=0, stdout="review", stderr="")
+            with (
+                self.subTest(output=output),
+                tempfile.TemporaryDirectory() as td,
+                patch.dict(multi_model_review.LANE_EFFECTIVE_MODELS, {"claude": "claude-fable-5-1"}),
+                patch.object(multi_model_review, "run", side_effect=[failed, reviewed]) as run,
+            ):
+                result = multi_model_review.lane_claude("prompt", td, Path(td))
+                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_args.args[0][-2:], ["--model", "opus"])
+                self.assertEqual(result.out, "review")
+
     def test_claude_fails_without_postable_output_when_fallback_is_unavailable(self) -> None:
         unavailable = CompletedProcess(
             args=[],
@@ -114,7 +132,7 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(result.out, "")
         self.assertIn("model limit", result.err)
 
-    def test_claude_does_not_retry_an_unrelated_failure(self) -> None:
+    def test_claude_retries_once_after_any_failed_initial_invocation(self) -> None:
         auth_failure = CompletedProcess(
             args=[],
             returncode=1,
@@ -133,7 +151,7 @@ class LaneConfigurationTest(unittest.TestCase):
             result = multi_model_review.lane_claude("prompt", td, Path(td))
 
         self.assertEqual(result, multi_model_review.LaneResult("", 1, "authentication failed"))
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_count, 2)
 
     def test_claude_does_not_retry_a_structured_review_that_mentions_a_limit(self) -> None:
         review = CompletedProcess(
