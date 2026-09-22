@@ -20,8 +20,8 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(multi_model_review.LANE_MODELS["claude"], "claude-fable-5-1")
         self.assertEqual(multi_model_review.CLAUDE_FALLBACK_MODEL, "opus")
         self.assertEqual(multi_model_review.LANE_EFFORTS["claude"], "high")
-        self.assertEqual(multi_model_review.LANE_MODELS["codex"], "gpt-5.6-sol")
-        self.assertEqual(multi_model_review.LANE_EFFORTS["codex"], "high")
+        self.assertEqual(multi_model_review.LANE_MODELS["codex"], "gpt-6-astra")
+        self.assertEqual(multi_model_review.LANE_EFFORTS["codex"], "medium")
 
     def test_claude_and_codex_commands_use_their_default_presets(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -45,8 +45,8 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(claude_cmd[-2:], ["--model", "claude-fable-5-1"])
         self.assertNotIn(prompt, codex_cmd)
         self.assertIn("codex.prompt", codex_cmd[-1])
-        self.assertIn('model_reasoning_effort="high"', codex_cmd)
-        self.assertEqual(codex_cmd[codex_cmd.index("-m") + 1], "gpt-5.6-sol")
+        self.assertIn('model_reasoning_effort="medium"', codex_cmd)
+        self.assertEqual(codex_cmd[codex_cmd.index("-m") + 1], "gpt-6-astra")
 
     def test_claude_retries_once_with_opus_when_primary_is_unavailable(self) -> None:
         unavailable = CompletedProcess(

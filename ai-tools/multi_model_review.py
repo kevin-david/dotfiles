@@ -155,14 +155,14 @@ LANE_LABELS = {
 }
 LANE_MODELS = {
     "claude": env("REVIEW_CLAUDE_MODEL", "claude-fable-5-1"),
-    "codex": env("REVIEW_CODEX_MODEL", "gpt-5.6-sol"),
+    "codex": env("REVIEW_CODEX_MODEL", "gpt-6-astra"),
     "antigravity": env("REVIEW_ANTIGRAVITY_MODEL", "Gemini 3.1 Pro (High)"),
 }
 LANE_EFFECTIVE_MODELS = dict(LANE_MODELS)
 CLAUDE_FALLBACK_MODEL = env("REVIEW_CLAUDE_FALLBACK_MODEL", "opus")
 LANE_EFFORTS = {
     "claude": env("REVIEW_CLAUDE_EFFORT", "high"),
-    "codex": env("REVIEW_CODEX_EFFORT", "high"),
+    "codex": env("REVIEW_CODEX_EFFORT", "medium"),
 }
 
 
