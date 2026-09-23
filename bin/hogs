@@ -11,9 +11,9 @@
 #
 # Notes:
 #   - %CPU is a LIVE sample (two top readings), not ps's misleading lifetime avg.
-#   - The header separates the failure modes we actually hit: CPU-bound (high r,
-#     us/sy) vs I/O-stall (high b, wa) vs scheduler thrash (ctxsw) vs fork/zombie
-#     leaks. Per-process tells you "what", --by-env tells you "where".
+#   - The header separates CPU pressure (high r, us/sy) from I/O stalls (high b,
+#     wa) and fork/zombie leaks. Context switches alone do not prove scheduler
+#     trouble. Per-process tells you "what", --by-env tells you "where".
 #   - PSI "full" is the honest pain number: it means EVERY task was stalled.
 #     "some" only means at least one was. full>10% on io is a real emergency.
 #   - On ZFS, per-process I/O lies: the kernel does the work in txg_sync and
@@ -53,6 +53,15 @@ LXC_DOCKER=/run/current-system/sw/bin/docker   # nested docker path inside NixOS
 SNAP=$(mktemp -d); trap 'rm -rf "$SNAP" "$FLAP" "$FLAP2"' EXIT
 T0=$(date +%s%N)
 cp /proc/diskstats "$SNAP/disk0" 2>/dev/null
+declare -A HIGH0
+if [ "$MEM" = 1 ]; then
+  for f in /sys/fs/cgroup/lxc/[0-9]*/memory.events \
+           /sys/fs/cgroup/qemu.slice/*.scope/memory.events \
+           /sys/fs/cgroup/system.slice/docker-*.scope/memory.events; do
+    [ -r "$f" ] || continue
+    HIGH0["$f"]=$(awk '$1=="high"{print $2; exit}' "$f" 2>/dev/null)
+  done
+fi
 zfs_objsets() {   # emits: pool/dataset reads writes nread nwritten
   local f n
   for f in /proc/spl/kstat/zfs/*/objset-0x*; do
@@ -115,10 +124,10 @@ psi_full() { awk -F'[= ]' '/full/{print $3; exit}' "/proc/pressure/$1" 2>/dev/nu
 echo "=================== TRIAGE ==================="
 echo "load: $(cut -d' ' -f1-3 /proc/loadavg)   cores: $(nproc)"
 set -- $(vmstat 1 2 2>/dev/null | tail -1)   # 1=r 2=b 11=in 12=cs 13=us 14=sy 15=id 16=wa
-VM_R=${1:-0}; VM_B=${2:-0}; VM_ID=${15:-100}; VM_WA=${16:-0}; VM_CS=${12:-0}
+VM_ID=${15:-100}
 if [ -n "${16:-}" ]; then
   echo "runnable r=$1  blocked(D) b=$2   cpu: us=${13}% sy=${14}% id=${15}% iowait=${16}%   ctxsw=${12}/s"
-  echo "  -> high r + low idle = CPU-bound | high b + iowait = I/O-stall | huge ctxsw = thrash"
+  echo "  -> high r + low idle = CPU-bound | high b + iowait = I/O-stall"
 fi
 PC=$(psi cpu); PI=$(psi io); PM=$(psi memory)
 PIF=$(psi_full io); PMF=$(psi_full memory)
@@ -312,9 +321,8 @@ fi
 # ----------------------------- verdict -----------------------------
 echo
 echo "=================== VERDICT ==================="
-V=""
 awk -v pc="${PC:-0}" -v pif="${PIF:-0}" -v pi="${PI:-0}" -v pmf="${PMF:-0}" \
-    -v id="${VM_ID:-100}" -v b="${VM_B:-0}" -v cs="${VM_CS:-0}" -v top="$TOPCPU" \
+    -v id="${VM_ID:-100}" -v top="$TOPCPU" \
     -v avail="${MEM_AVAIL_PCT:-100}" -v swu="${SWAP_USED:-0}" '
 BEGIN{
   n=0
@@ -325,7 +333,6 @@ BEGIN{
   else if (pi+0 > 25)        { printf "  I/O PRESSURE   PSI io some=%s%% -- some tasks waiting; see DEVICE table\n", pi; n++ }
   if (pc+0 > 40 && id+0 < 15){ printf "  CPU-BOUND      PSI cpu some=%s%%, idle=%s%% -- top: %s\n", pc, id, top; n++ }
   else if (pc+0 > 40)        { printf "  CPU PRESSURE   PSI cpu some=%s%% -- top: %s\n", pc, top; n++ }
-  if (cs+0 > 100000)         { printf "  SCHED THRASH   %s ctxsw/s\n", cs; n++ }
   if (n==0)                  { printf "  healthy        PSI cpu=%s%% io(full)=%s%% -- nothing saturated\n", pc, pif }
 }'
 echo "  (load average counts host + every LXC + every VM; it overstates host pain)"
@@ -371,30 +378,38 @@ if [ "$MEM" = 1 ]; then
   # processes double-counts shared pages; cgroup memory.current does not.
   if [ -d /sys/fs/cgroup ]; then
     echo "-- memory by env/container (cgroup memory.current) --"
-    printf "%-34s %10s %10s  %s\n" "OWNER" "USED_MB" "LIMIT_MB" "AT_LIMIT?"
+    printf "%-34s %10s %10s %10s %10s\n" "OWNER" "USED_MB" "HIGH_MB" "MAX_MB" "HIGH_NEW"
     {
       for f in /sys/fs/cgroup/lxc/[0-9]*/memory.current \
                /sys/fs/cgroup/qemu.slice/*.scope/memory.current \
                /sys/fs/cgroup/system.slice/docker-*.scope/memory.current; do
         [ -r "$f" ] || continue
         d=$(dirname "$f"); cur=$(cat "$f" 2>/dev/null) || continue
+        high=$(cat "$d/memory.high" 2>/dev/null)
         max=$(cat "$d/memory.max" 2>/dev/null)
-        hi=$(awk '/^high /{print $2}' "$d/memory.events" 2>/dev/null)
+        events="$d/memory.events"
+        hi=$(awk '$1=="high"{print $2; exit}' "$events" 2>/dev/null)
+        hi0=${HIGH0[$events]-}
+        if [[ $hi =~ ^[0-9]+$ && $hi0 =~ ^[0-9]+$ && $hi -ge $hi0 ]]; then
+          high_new=$((hi - hi0))
+        else
+          high_new=-
+        fi
         case "$f" in
           */lxc/*)               lbl="lxc:$(printf '%s' "$f" | grep -oE 'lxc/[0-9]+' | grep -oE '[0-9]+$')" ;;
           */qemu.slice/*)        lbl="vm:$(printf '%s' "$f" | grep -oE '[0-9]+\.scope' | grep -oE '[0-9]+')" ;;
           */docker-*)            did=$(printf '%s' "$f" | grep -oE 'docker-[0-9a-f]{12}' | sed 's/docker-//'); lbl="${NAME[$did]:-docker:$did}" ;;
           *)                     lbl="$f" ;;
         esac
-        printf '%s\t%s\t%s\t%s\n' "$cur" "$lbl" "$max" "${hi:-0}"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$cur" "$lbl" "$high" "$max" "$high_new"
       done
     } | sort -rn | head -n "$N" | awk -F'\t' '{
-        lim = ($3=="max"||$3=="") ? "-" : sprintf("%.0f", $3/1048576)
-        flag = ($4+0 > 0) ? sprintf("yes (%d high events)", $4) : ""
-        printf "%-34s %10.0f %10s  %s\n", $2, $1/1048576, lim, flag
+        high = ($3=="max"||$3=="") ? "-" : sprintf("%.0f", $3/1048576)
+        max = ($4=="max"||$4=="") ? "-" : sprintf("%.0f", $4/1048576)
+        printf "%-34s %10.0f %10s %10s %10s\n", $2, $1/1048576, high, max, $5
       }'
-    echo "  -> AT_LIMIT means the cgroup has hit memory.high and is being"
-    echo "     reclaimed. On ZFS that also evicts the HOST ARC (not cgroup-aware)."
+    echo "  -> HIGH_NEW is new memory.high throttle/reclaim events since this run began."
+    echo "     '-' means the cgroup had no starting snapshot."
   fi
   echo "-- top $N by RSS (double-counts shared pages; use the table above for totals) --"
   printf "%-26s %9s  %s\n" "OWNER" "RSS_MB" "COMMAND"
