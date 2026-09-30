@@ -154,7 +154,7 @@ LANE_LABELS = {
     "antigravity": env("REVIEW_ANTIGRAVITY_LABEL", "Antigravity"),
 }
 LANE_MODELS = {
-    "claude": env("REVIEW_CLAUDE_MODEL", "claude-fable-5-1"),
+    "claude": env("REVIEW_CLAUDE_MODEL", "opus"),
     "codex": env("REVIEW_CODEX_MODEL", "gpt-6-astra"),
     "antigravity": env("REVIEW_ANTIGRAVITY_MODEL", "Gemini 3.1 Pro (High)"),
 }

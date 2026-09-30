@@ -17,7 +17,7 @@ multi_model_review = importlib.import_module("multi_model_review")
 
 class LaneConfigurationTest(unittest.TestCase):
     def test_default_reviewer_presets_keep_effort_with_its_harness(self) -> None:
-        self.assertEqual(multi_model_review.LANE_MODELS["claude"], "claude-fable-5-1")
+        self.assertEqual(multi_model_review.LANE_MODELS["claude"], "opus")
         self.assertEqual(multi_model_review.CLAUDE_FALLBACK_MODEL, "opus")
         self.assertEqual(multi_model_review.LANE_EFFORTS["claude"], "high")
         self.assertEqual(multi_model_review.LANE_MODELS["codex"], "gpt-6-astra")
@@ -42,7 +42,7 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertNotIn(prompt, claude_cmd)
         self.assertIn("claude.prompt", claude_cmd[2])
         self.assertEqual(claude_cmd[3:7], ["--permission-mode", "bypassPermissions", "--effort", "high"])
-        self.assertEqual(claude_cmd[-2:], ["--model", "claude-fable-5-1"])
+        self.assertEqual(claude_cmd[-2:], ["--model", "opus"])
         self.assertNotIn(prompt, codex_cmd)
         self.assertIn("codex.prompt", codex_cmd[-1])
         self.assertIn('model_reasoning_effort="medium"', codex_cmd)
@@ -85,6 +85,7 @@ class LaneConfigurationTest(unittest.TestCase):
             with (
                 self.subTest(message=message),
                 tempfile.TemporaryDirectory() as td,
+                patch.dict(multi_model_review.LANE_MODELS, {"claude": "claude-fable-5-1"}),
                 patch.object(multi_model_review, "run", side_effect=[rejected, reviewed]) as run,
             ):
                 result = multi_model_review.lane_claude("prompt", td, Path(td))
@@ -102,6 +103,7 @@ class LaneConfigurationTest(unittest.TestCase):
             with (
                 self.subTest(output=output),
                 tempfile.TemporaryDirectory() as td,
+                patch.dict(multi_model_review.LANE_MODELS, {"claude": "claude-fable-5-1"}),
                 patch.dict(multi_model_review.LANE_EFFECTIVE_MODELS, {"claude": "claude-fable-5-1"}),
                 patch.object(multi_model_review, "run", side_effect=[failed, reviewed]) as run,
             ):
@@ -120,6 +122,7 @@ class LaneConfigurationTest(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as td,
+            patch.dict(multi_model_review.LANE_MODELS, {"claude": "claude-fable-5-1"}),
             patch.object(
                 multi_model_review,
                 "run",
@@ -142,6 +145,7 @@ class LaneConfigurationTest(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as td,
+            patch.dict(multi_model_review.LANE_MODELS, {"claude": "claude-fable-5-1"}),
             patch.object(
                 multi_model_review,
                 "run",
