@@ -24,6 +24,20 @@ the destination before linking. To install just these settings, run
 The main file you'll want to change right off the bat is `zsh/zshrc.symlink`,
 which sets up a few paths that'll be different on your particular machine.
 
+## Tmux session recovery
+
+Tmux Resurrect and Continuum save layouts, working directories and pane history,
+with snapshots separated by hostname under `~/.local/state/tmux/resurrect/`.
+The last snapshot is restored when tmux starts. Applications are resumed
+manually from their own saved state.
+
+On a Linux system with a user systemd manager, run
+`./tmux/install.sh --enable-session-restore`. This enables tmux at user-manager
+startup and a five-minute save timer that also works with all clients detached.
+Run `sudo loginctl enable-linger "$USER"` for startup at boot without logging in.
+The installer reloads existing tmux sessions without restarting their processes.
+Use `systemctl --user start tmux-save.service` for an immediate snapshot.
+
 `dot` is a simple script that installs some dependencies, sets sane macOS
 defaults, and so on. Tweak this script, and occasionally run `dot` from
 time to time to keep your environment fresh and up-to-date. You can find
