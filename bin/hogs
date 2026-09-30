@@ -4,16 +4,16 @@
 #
 # One-shot "why is this box unhappy" triage for a Linux/Proxmox host.
 #
-#   default : verdict + load-decomposition header + crash-loops + top-N by CPU
-#             + top-N by disk I/O + per-device saturation + ZFS attribution
-#   --by-env: cores-per-cgroup rollup (which env/container is eating the box)
-#   --mem   : top-N by RSS + swap + memory pressure (ZFS ARC shown separately)
+#   default : immediate triage + environment/nested-container CPU and memory
+#             + restart observations + process/disk/ZFS attribution + verdict
+#   --by-env: retained for compatibility; aggregation is now always shown
+#   --mem   : also show top-N processes by RSS (shared pages may be double-counted)
 #
 # Notes:
 #   - %CPU is a LIVE sample (two top readings), not ps's misleading lifetime avg.
 #   - The header separates CPU pressure (high r, us/sy) from I/O stalls (high b,
 #     wa) and fork/zombie leaks. Context switches alone do not prove scheduler
-#     trouble. Per-process tells you "what", --by-env tells you "where".
+#     trouble. Cgroup totals include every worker in each container.
 #   - PSI "full" is the honest pain number: it means EVERY task was stalled.
 #     "some" only means at least one was. full>10% on io is a real emergency.
 #   - On ZFS, per-process I/O lies: the kernel does the work in txg_sync and
@@ -35,33 +35,19 @@ if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && [ -t 0 ]; then
   exec sudo "$0" "$@"
 fi
 
-N=20; BY_ENV=0; MEM=0
+N=20; MEM=0
 for a in "$@"; do
   case "$a" in
-    --by-env) BY_ENV=1 ;;
+    --by-env) : ;;
     --mem)    MEM=1 ;;
     *[!0-9]*|'') : ;;
     *) N="$a" ;;
   esac
 done
 
-LXC_DOCKER=/run/current-system/sw/bin/docker   # nested docker path inside NixOS LXCs
-
-# ---------------- t=0 counter snapshot (deltas computed at the end) ----------
-# Taken first so the DEVICE/ZFS sections measure the whole script runtime for
-# free, instead of paying for another sleep.
-SNAP=$(mktemp -d); trap 'rm -rf "$SNAP" "$FLAP" "$FLAP2"' EXIT
-T0=$(date +%s%N)
-cp /proc/diskstats "$SNAP/disk0" 2>/dev/null
-declare -A HIGH0
-if [ "$MEM" = 1 ]; then
-  for f in /sys/fs/cgroup/lxc/[0-9]*/memory.events \
-           /sys/fs/cgroup/qemu.slice/*.scope/memory.events \
-           /sys/fs/cgroup/system.slice/docker-*.scope/memory.events; do
-    [ -r "$f" ] || continue
-    HIGH0["$f"]=$(awk '$1=="high"{print $2; exit}' "$f" 2>/dev/null)
-  done
-fi
+# Scratch files contain counters and display metadata, never container secrets.
+SNAP=$(mktemp -d) || exit 1
+trap 'rm -rf "$SNAP"' EXIT
 zfs_objsets() {   # emits: pool/dataset reads writes nread nwritten
   local f n
   for f in /proc/spl/kstat/zfs/*/objset-0x*; do
@@ -72,46 +58,19 @@ zfs_objsets() {   # emits: pool/dataset reads writes nread nwritten
       END{if(r!=""||w!="") print n, r+0, w+0, nr+0, nw+0}' "$f"
   done
 }
-zfs_objsets > "$SNAP/zfs0" 2>/dev/null
-awk '/^hits /{h=$3} /^misses /{m=$3} END{print h+0, m+0}' \
-  /proc/spl/kstat/zfs/arcstats > "$SNAP/arc0" 2>/dev/null
-
-# ---------------- container map (id->name) + flapping list ----------------
+# Name lookup happens after triage and has bounded subprocess timeouts.
 declare -A NAME
-FLAP=$(mktemp); FLAP2=$(mktemp)
-
-scan_env() {            # $1=env label ("" for host); reads docker inspect lines on stdin
-  local env="$1" id nm rc st started sid
-  while IFS='|' read -r id nm rc st started; do
-    [ -z "$id" ] && continue
-    nm=${nm#/}; sid=${id:0:12}
-    NAME[$sid]="${env:+$env:}$nm"
-    if [ "${rc:-0}" -ge 5 ] 2>/dev/null || [ "$st" = "restarting" ]; then
-      printf '%s\t%s\t%s\t%s\t%s\n' "${env:-host}" "$nm" "$rc" "$st" "$started" >>"$FLAP"
-    fi
-  done
-}
-inspect_all() {         # $@ = docker invocation; emits id|name|restartcount|status
-  local ids; ids=$("$@" ps -aq 2>/dev/null) || return 0
-  [ -n "$ids" ] && "$@" inspect --format '{{.Id}}|{{.Name}}|{{.RestartCount}}|{{.State.Status}}|{{.State.StartedAt}}' $ids 2>/dev/null
-}
-if command -v docker >/dev/null 2>&1; then
-  scan_env "" < <(inspect_all docker)
-fi
-if command -v pct >/dev/null 2>&1; then
-  for ct in $(pct list 2>/dev/null | awk 'NR>1{print $1}'); do
-    scan_env "lxc$ct" < <(inspect_all pct exec "$ct" -- "$LXC_DOCKER")
-  done
-fi
 
 owner() {               # $1=pid -> container-name | lxc:N | vm:N | docker:<id> | host
-  local cg lxc did vm
+  local cg lxc did vm key
   case "$1" in ''|*[!0-9]*) printf '?'; return ;; esac   # guard: only real pids
   cg=$(tr '\0\n' '  ' < "/proc/$1/cgroup" 2>/dev/null) || { printf '?'; return; }
   lxc=$(printf '%s' "$cg" | grep -oE '/lxc/[0-9]+' | head -1 | grep -oE '[0-9]+$')
   did=$(printf '%s' "$cg" | grep -oE 'docker-[0-9a-f]{12}' | head -1 | sed 's/docker-//')
   vm=$(printf '%s' "$cg"  | grep -oE 'qemu\.slice/[0-9]+' | head -1 | grep -oE '[0-9]+$')
-  if   [ -n "$did" ] && [ -n "${NAME[$did]}" ]; then printf '%s' "${NAME[$did]}"
+  key="${lxc:+lxc$lxc}"
+  key="${key:-host}:$did"
+  if   [ -n "$did" ] && [ -n "${NAME[$key]}" ]; then printf '%s' "${NAME[$key]}"
   elif [ -n "$did" ]; then printf '%sdocker:%s' "${lxc:+lxc$lxc/}" "$did"
   elif [ -n "$lxc" ]; then printf 'lxc:%s' "$lxc"
   elif [ -n "$vm"  ]; then printf 'vm:%s' "$vm"
@@ -125,6 +84,8 @@ echo "=================== TRIAGE ==================="
 echo "load: $(cut -d' ' -f1-3 /proc/loadavg)   cores: $(nproc)"
 set -- $(vmstat 1 2 2>/dev/null | tail -1)   # 1=r 2=b 11=in 12=cs 13=us 14=sy 15=id 16=wa
 VM_ID=${15:-100}
+VM_RUNNABLE=${1:-0}
+CPU_COUNT=$(nproc)
 if [ -n "${16:-}" ]; then
   echo "runnable r=$1  blocked(D) b=$2   cpu: us=${13}% sy=${14}% id=${15}% iowait=${16}%   ctxsw=${12}/s"
   echo "  -> high r + low idle = CPU-bound | high b + iowait = I/O-stall"
@@ -155,47 +116,27 @@ if [ "$Z" -gt 0 ]; then
   echo "zombies: $Z   top reaper-gap parent: $(echo "$zp" | awk '{print $1}')x under pid $zppid [$(owner "$zppid") $(ps -o comm= -p "$zppid" 2>/dev/null)]"
 fi
 
-# ----------------------------- flapping/crash-loops -----------------------------
-# RESTARTS is a LIFETIME counter -- on a host up for weeks it says nothing about
-# now. What separates a fire from history is CURRENT uptime: a container running
-# 8h with 38 restarts is stable; one running 40s with 6 is looping.
-LOOP_MAX_UP=600                       # running & younger than this = still looping
-if [ -s "$FLAP" ]; then
-  NOW=$(date +%s)
-  while IFS=$'\t' read -r env nm rc st started; do
-    ups=-1
-    case "$started" in
-      ''|0001-01-01*) ;;
-      *) s=$(date -d "$started" +%s 2>/dev/null) && ups=$(( NOW - s )) ;;
-    esac
-    if   [ "$ups" -lt 0 ];      then up='?'
-    elif [ "$ups" -lt 3600 ];   then up="$((ups/60))m"
-    elif [ "$ups" -lt 172800 ]; then up="$((ups/3600))h"
-    else                             up="$((ups/86400))d"; fi
-    case "$st" in
-      restarting) live=0 ;;
-      running)    if [ "$ups" -ge 0 ] && [ "$ups" -lt "$LOOP_MAX_UP" ]; then live=0; else live=1; fi ;;
-      *)          live=2 ;;
-    esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$live" "$env" "$nm" "$rc" "$st" "$up"
-  done <"$FLAP" >"$FLAP2"
-
-  if awk -F'\t' '$1==0{f=1} END{exit !f}' "$FLAP2"; then hdr="CRASH-LOOP / FLAPPING"; else hdr="RESTART HISTORY (nothing looping now)"; fi
-  echo
-  echo "=================== $hdr  (restarts>=5 or restarting) ==================="
-  printf "%-10s %-30s %10s  %-12s %-6s %s\n" "ENV" "CONTAINER" "RESTARTS" "STATE" "UPFOR" ""
-  sort -t$'\t' -k1,1n -k4,4rn "$FLAP2" | head -n "$N" \
-    | while IFS=$'\t' read -r live env nm rc st up; do
-        case "$live" in
-          0) note='<- LIVE (looping now)' ;;
-          1) note='   stable' ;;
-          *) note='' ;;
-        esac
-        printf "%-10s %-30s %10s  %-12s %-6s %s\n" "$env" "$nm" "$rc" "$st" "$up" "$note"
-      done
-  echo "  -> RESTARTS is lifetime; UPFOR is what matters. 'stable' = high count, but"
-  echo "     running longer than ${LOOP_MAX_UP}s, so the restarts are old history."
+# ----------------------------- cgroup attribution -----------------------------
+HELPER="$(dirname "$(readlink -f "$0")")/hogs-cgroups.py"
+TOPAGG=""
+if command -v python3 >/dev/null 2>&1 && [ -r "$HELPER" ]; then
+  if ! python3 "$HELPER" --count "$N" --output-dir "$SNAP"; then
+    echo "WARNING: cgroup attribution failed; process and disk samples follow."
+  fi
+  if [ -f "$SNAP/names" ]; then
+    while IFS=$'\t' read -r key label; do NAME["$key"]="$label"; done < "$SNAP/names"
+  fi
+  [ -f "$SNAP/aggregate" ] && TOPAGG=$(cat "$SNAP/aggregate")
+else
+  echo "WARNING: Python 3 or hogs-cgroups.py unavailable; aggregate attribution skipped."
 fi
+
+# These I/O windows start after metadata lookup; CPU and PSI windows are separate.
+T0=$(date +%s%N)
+cp /proc/diskstats "$SNAP/disk0" 2>/dev/null
+zfs_objsets > "$SNAP/zfs0" 2>/dev/null
+awk '/^hits /{h=$3} /^misses /{m=$3} END{print h+0, m+0}' \
+  /proc/spl/kstat/zfs/arcstats > "$SNAP/arc0" 2>/dev/null
 
 # ----------------------------- top by CPU -----------------------------
 echo
@@ -299,9 +240,9 @@ if [ -s "$SNAP/zfs0" ]; then
       | awk '{gsub(/%/,"",$2); gsub(/%/,"",$3); if ($2+0 >= 80) printf "  %-18s %3d%% full, %s%% fragmented\n",$1,$2,$3}')
     if [ -n "$POOLW" ]; then
       echo
-      echo "  ZFS pools past the 80% performance cliff:"
+    echo "  ZFS pools above 80% capacity (capacity warning, not proof of current I/O saturation):"
       echo "$POOLW"
-      echo "  -> past ~80% ZFS switches to best-fit allocation; writes fragment and slow down"
+    echo "  -> low free space can worsen allocation and fragmentation; correlate with device latency."
     fi
   fi
   # ARC health
@@ -322,49 +263,23 @@ fi
 echo
 echo "=================== VERDICT ==================="
 awk -v pc="${PC:-0}" -v pif="${PIF:-0}" -v pi="${PI:-0}" -v pmf="${PMF:-0}" \
-    -v id="${VM_ID:-100}" -v top="$TOPCPU" \
+    -v id="${VM_ID:-100}" -v runnable="$VM_RUNNABLE" -v capacity="$CPU_COUNT" \
+    -v top="${TOPAGG:-process sample: $TOPCPU}" \
     -v avail="${MEM_AVAIL_PCT:-100}" -v swu="${SWAP_USED:-0}" '
 BEGIN{
   n=0
-  if (pmf+0 > 5)             { printf "  MEMORY STALL   PSI mem full=%s%% -- check ARC and swap first\n", pmf; n++ }
-  if (avail+0 < 10)          { printf "  MEMORY TIGHT   only %s%% available -- ARC should shrink before this hurts\n", avail; n++ }
+  if (pmf+0 > 5)             { printf "  MEMORY STALL   PSI mem full=%s%% -- inspect shared/child cgroup limit events and PSI above\n", pmf; n++ }
+  if (avail+0 < 10)          { printf "  MEMORY TIGHT   only %s%% available -- inspect working sets, limits and ARC\n", avail; n++ }
   if (swu+0 > 0)             { printf "  SWAP IN USE    %.1f GiB -- on this box swap is meant to be off\n", swu/1048576; n++ }
   if (pif+0 > 10)            { printf "  I/O STALL      PSI io full=%s%% -- every task is waiting on a device\n", pif; n++ }
   else if (pi+0 > 25)        { printf "  I/O PRESSURE   PSI io some=%s%% -- some tasks waiting; see DEVICE table\n", pi; n++ }
-  if (pc+0 > 40 && id+0 < 15){ printf "  CPU-BOUND      PSI cpu some=%s%%, idle=%s%% -- top: %s\n", pc, id, top; n++ }
+  if (id+0 < 15 && (pc+0 > 20 || runnable+0 > capacity+0)){
+                             printf "  CPU-BOUND      PSI cpu some=%s%%, idle=%s%% -- top: %s\n", pc, id, top; n++ }
   else if (pc+0 > 40)        { printf "  CPU PRESSURE   PSI cpu some=%s%% -- top: %s\n", pc, top; n++ }
-  if (n==0)                  { printf "  healthy        PSI cpu=%s%% io(full)=%s%% -- nothing saturated\n", pc, pif }
+  if (n==0)                  { printf "  No high host pressure in header sample; inspect cgroup rows for local limits.\n  Largest CPU aggregate: %s\n", top }
 }'
-echo "  (load average counts host + every LXC + every VM; it overstates host pain)"
-
-# ----------------------------- --by-env rollup -----------------------------
-if [ "$BY_ENV" = 1 ] && [ -d /sys/fs/cgroup ]; then
-  echo
-  echo "=================== CORES BY ENV/CONTAINER  (2s delta) ==================="
-  cd /sys/fs/cgroup || exit
-  # Only meaningful units (not nested parent aggregates): each LXC as a whole,
-  # each host docker container, each VM scope. LXC-internal containers roll up
-  # into their lxc:N total.
-  mapfile -t CGS < <(
-    ls -d lxc/[0-9]*/cpu.stat 2>/dev/null
-    ls -d qemu.slice/*.scope/cpu.stat 2>/dev/null
-    ls -d system.slice/docker-*.scope/cpu.stat 2>/dev/null
-  )
-  declare -A U1
-  for f in "${CGS[@]}"; do U1["$f"]=$(awk '/^usage_usec/{print $2}' "$f" 2>/dev/null); done
-  sleep 2
-  for f in "${CGS[@]}"; do
-    u2=$(awk '/^usage_usec/{print $2}' "$f" 2>/dev/null); [ -z "$u2" ] && continue
-    d=$(( u2 - ${U1[$f]:-$u2} )); [ "$d" -gt 0 ] || continue
-    case "$f" in
-      lxc/*)                 lbl="lxc:$(printf '%s' "$f" | grep -oE 'lxc/[0-9]+' | grep -oE '[0-9]+$')" ;;
-      qemu.slice/*)          lbl="vm:$(printf '%s' "$f" | grep -oE '[0-9]+\.scope' | grep -oE '[0-9]+')" ;;
-      system.slice/docker-*) did=$(printf '%s' "$f" | grep -oE 'docker-[0-9a-f]{12}' | sed 's/docker-//'); lbl="${NAME[$did]:-docker:$did}" ;;
-      *)                     lbl="$f" ;;
-    esac
-    printf '%d\t%s\n' "$d" "$lbl"
-  done | sort -rn | head -n "$N" | awk -F'\t' '{printf "%6.2f cores  %s\n", $1/2000000, $2}'
-fi
+echo "  Load includes runnable and uninterruptible tasks across host and guests; use PSI and idle time to assess contention."
+echo "  Header/PSI, aggregate CPU, per-process CPU and I/O are separate sampling windows."
 
 # ----------------------------- --mem section -----------------------------
 if [ "$MEM" = 1 ]; then
@@ -374,43 +289,6 @@ if [ "$MEM" = 1 ]; then
   echo "PSI mem some/avg10: $(psi memory)%   full/avg10: $(psi_full memory)%"
   [ -r /proc/spl/kstat/zfs/arcstats ] && \
     awk '/^size /{printf "ZFS ARC: %.1f GiB (counts as used, but reclaimable)\n",$3/1073741824}' /proc/spl/kstat/zfs/arcstats
-  # Per-container rollup: the memory analogue of --by-env. RSS summed across
-  # processes double-counts shared pages; cgroup memory.current does not.
-  if [ -d /sys/fs/cgroup ]; then
-    echo "-- memory by env/container (cgroup memory.current) --"
-    printf "%-34s %10s %10s %10s %10s\n" "OWNER" "USED_MB" "HIGH_MB" "MAX_MB" "HIGH_NEW"
-    {
-      for f in /sys/fs/cgroup/lxc/[0-9]*/memory.current \
-               /sys/fs/cgroup/qemu.slice/*.scope/memory.current \
-               /sys/fs/cgroup/system.slice/docker-*.scope/memory.current; do
-        [ -r "$f" ] || continue
-        d=$(dirname "$f"); cur=$(cat "$f" 2>/dev/null) || continue
-        high=$(cat "$d/memory.high" 2>/dev/null)
-        max=$(cat "$d/memory.max" 2>/dev/null)
-        events="$d/memory.events"
-        hi=$(awk '$1=="high"{print $2; exit}' "$events" 2>/dev/null)
-        hi0=${HIGH0[$events]-}
-        if [[ $hi =~ ^[0-9]+$ && $hi0 =~ ^[0-9]+$ && $hi -ge $hi0 ]]; then
-          high_new=$((hi - hi0))
-        else
-          high_new=-
-        fi
-        case "$f" in
-          */lxc/*)               lbl="lxc:$(printf '%s' "$f" | grep -oE 'lxc/[0-9]+' | grep -oE '[0-9]+$')" ;;
-          */qemu.slice/*)        lbl="vm:$(printf '%s' "$f" | grep -oE '[0-9]+\.scope' | grep -oE '[0-9]+')" ;;
-          */docker-*)            did=$(printf '%s' "$f" | grep -oE 'docker-[0-9a-f]{12}' | sed 's/docker-//'); lbl="${NAME[$did]:-docker:$did}" ;;
-          *)                     lbl="$f" ;;
-        esac
-        printf '%s\t%s\t%s\t%s\t%s\n' "$cur" "$lbl" "$high" "$max" "$high_new"
-      done
-    } | sort -rn | head -n "$N" | awk -F'\t' '{
-        high = ($3=="max"||$3=="") ? "-" : sprintf("%.0f", $3/1048576)
-        max = ($4=="max"||$4=="") ? "-" : sprintf("%.0f", $4/1048576)
-        printf "%-34s %10.0f %10s %10s %10s\n", $2, $1/1048576, high, max, $5
-      }'
-    echo "  -> HIGH_NEW is new memory.high throttle/reclaim events since this run began."
-    echo "     '-' means the cgroup had no starting snapshot."
-  fi
   echo "-- top $N by RSS (double-counts shared pages; use the table above for totals) --"
   printf "%-26s %9s  %s\n" "OWNER" "RSS_MB" "COMMAND"
   ps -eo pid=,rss=,args= --sort=-rss | head -n "$N" | while read -r pid rss cmd; do

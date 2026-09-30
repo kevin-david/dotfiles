@@ -44,6 +44,27 @@ time to time to keep your environment fresh and up-to-date. You can find
 this script in `bin/`.
 
 
+## Linux resource triage
+
+Run `sudo ~/.dotfiles/bin/hogs` on a cgroup v2 Linux host. The header appears
+before Docker lookups. Environment and nested Docker totals are shown by
+default, with measured CPU sample durations, inherited CPU quotas, effective
+cpusets, quota-throttling deltas, and cgroup memory usage. Parent totals include
+their children; do not add them together. Non-Docker residuals include jobs
+launched directly in a container or user session.
+
+The memory table includes the shared LXC parent and local high/max/OOM event
+deltas. Reclaim can be caused by a cgroup limit even when the host has available
+RAM. Name and restart lookups have an eight-second budget per environment per
+pass; failures retain cgroup IDs and report incomplete metadata. Restart
+observations compare two reads instead of treating a recently started process
+with old failures as a confirmed loop.
+
+`hogs 10` limits ranked rows. `--by-env` remains accepted; `--mem` adds process
+RSS details. The Bash entry point uses the adjacent `bin/hogs-cgroups.py` helper
+and Python 3.8+ with no third-party packages. Regression checks:
+`uv run --no-project python -m unittest discover -s tests -p test_hogs.py`.
+
 ## Review model fallback
 
 `ai-tools/multi_model_review.py` uses Opus by default for the Claude lane. `--claude-model` or `REVIEW_CLAUDE_MODEL` overrides the primary model. A failed initial Claude invocation is retried once when the fallback model differs from the primary. This covers nonzero exits, CLI error envelopes, unavailable models, and usage or spend limits, including limit messages returned with exit code zero. The fallback also defaults to Opus; `--claude-fallback-model` or `REVIEW_CLAUDE_FALLBACK_MODEL` overrides it.
