@@ -15,6 +15,7 @@ Posting policy:
   - Private/internal repos -> post automatically ("let it fly").
   - --post / --report override the visibility default.
   - --post-saved <dir>    -> post what a finished run already saved, running no lane.
+  - --post-findings FILE -> post prepared comment bodies, running no lane or rubric checks.
 
 GitHub access is via the `gh` CLI (reuses your existing auth — no token
 handling, no extra dependency). Stdlib only.
@@ -35,7 +36,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from io import TextIOWrapper
 from pathlib import Path
@@ -77,6 +78,26 @@ class Finding(TypedDict, total=False):
     title: str
     confidence: float
     body: str
+
+
+class PreparedReview(TypedDict):
+    repo: str
+    pr: str
+    commit_id: str
+    body: str
+    comments: list[Finding]
+
+
+class DeliveryReceipt(TypedDict):
+    status: Literal["posting", "posted", "partial", "posting_uncertain"]
+    repo: str
+    pr: str
+    reviewed_commit: str
+    current_head: str
+    urls: list[str]
+    issues: list[str]
+    undelivered_comments: list[Finding]
+    unposted_body: str
 
 
 class InspectionTarget(TypedDict, total=False):
@@ -1536,6 +1557,138 @@ def post_saved_review(out: Path, pr: str, lanes: list[str]) -> None:
         raise SystemExit(1)
 
 
+def post_prepared_review(source: Path, pr: str) -> DeliveryReceipt:
+    """Publish an external review's prepared bodies without invoking review lanes.
+
+    Unusable anchors and rejected inline comments become review-body findings.
+    Uncertain outcomes stay in the receipt while independent posts continue.
+    """
+    raw = json.loads(source.read_text())
+    if not isinstance(raw, dict) or any(
+        not isinstance(raw.get(key), str) for key in ("repo", "pr", "commit_id", "body")
+    ):
+        die("prepared review requires string repo, pr, commit_id, and body fields")
+    if raw["pr"] != pr or not re.fullmatch(r"[1-9]\d*", pr):
+        die("prepared review targets a different or invalid PR")
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", raw["repo"]) or not re.fullmatch(r"[0-9a-f]{40}", raw["commit_id"]):
+        die("prepared review requires a repository slug and full reviewed commit SHA")
+    if not isinstance(raw.get("comments"), list) or not (raw["comments"] or raw["body"].strip()):
+        die("prepared review has no comments or review body")
+    for finding in raw["comments"]:
+        if not isinstance(finding, dict) or not isinstance(finding.get("body"), str) or not finding["body"].strip():
+            die("each prepared comment requires a nonempty body")
+    data = cast(PreparedReview, raw)
+    live = json.loads(run_ok(["gh", "api", f"repos/{data['repo']}/pulls/{pr}"]))
+    receipt: DeliveryReceipt = {
+        "status": "posting",
+        "repo": data["repo"],
+        "pr": pr,
+        "reviewed_commit": data["commit_id"],
+        "current_head": live["head"]["sha"],
+        "urls": [],
+        "issues": [],
+        "undelivered_comments": list(data["comments"]),
+        "unposted_body": data["body"],
+    }
+    record = source.with_suffix(".delivery.json")
+    try:
+        with record.open("x") as output:
+            json.dump(receipt, output, indent=2)
+        record.chmod(0o600)
+    except FileExistsError:
+        die(f"{record} already records a posting attempt; inspect delivery before any further publication")
+
+    def save() -> None:
+        record.write_text(json.dumps(receipt, indent=2) + "\n")
+
+    uncertain = False
+
+    def attempt(call: Callable[[], CompletedProcess[str]]) -> Literal["posted", "rejected", "uncertain"]:
+        nonlocal uncertain
+        try:
+            result = call()
+            if result.returncode:
+                receipt["issues"].append(result.stderr.strip() or result.stdout.strip() or "publication failed")
+                # These responses confirm rejection; transport errors and 5xx may follow an accepted write.
+                if re.search(r"\(HTTP (?:400|401|403|404|410|422)\)", result.stderr):
+                    save()
+                    return "rejected"
+            else:
+                posted = json.loads(result.stdout)
+                if isinstance(posted, dict) and isinstance(posted.get("html_url"), str) and posted["html_url"]:
+                    receipt["urls"].append(posted["html_url"])
+                    save()
+                    return "posted"
+                receipt["issues"].append("publication response has no usable comment URL")
+        except (OSError, ValueError, KeyError) as exc:
+            receipt["issues"].append(str(exc))
+        uncertain = True
+        save()
+        return "uncertain"
+
+    fallback: list[Finding] = []
+    for finding in data["comments"]:
+        line, start, path = finding.get("line"), finding.get("start_line"), finding.get("path")
+        if (
+            not isinstance(path, str)
+            or not path.strip()
+            or type(line) is not int
+            or line < 1
+            or (start is not None and (type(start) is not int or not 1 <= start <= line))
+        ):
+            receipt["issues"].append(f"Unusable inline anchor {path}:{line}; preserving finding in review body")
+            fallback.append(finding)
+            save()
+            continue
+        outcome = attempt(
+            lambda finding=finding, line=line: post_inline(
+                data["repo"], pr, Sha(data["commit_id"]), finding, finding["body"], line
+            )
+        )
+        if outcome == "posted":
+            receipt["undelivered_comments"].remove(finding)
+        elif outcome == "rejected":
+            fallback.append(finding)
+        save()
+    body = data["body"] if data["body"].strip() else ""
+    for finding in fallback:
+        location = f"{finding.get('path')}:{finding.get('line')}"
+        body += ("\n\n" if body else "") + finding["body"] + f"\n\n_Inline placement unavailable: {location}._"
+    receipt["unposted_body"] = body
+    save()
+    if body:
+        outcome = attempt(
+            lambda: run(
+                [
+                    "gh",
+                    "api",
+                    "--method",
+                    "POST",
+                    f"repos/{data['repo']}/pulls/{pr}/reviews",
+                    "-f",
+                    "event=COMMENT",
+                    "-f",
+                    f"commit_id={data['commit_id']}",
+                    "-f",
+                    f"body={body}",
+                ]
+            )
+        )
+        if outcome == "posted":
+            receipt["unposted_body"] = ""
+            for finding in fallback:
+                receipt["undelivered_comments"].remove(finding)
+    receipt["status"] = (
+        "posting_uncertain"
+        if uncertain
+        else "partial"
+        if receipt["undelivered_comments"] or receipt["unposted_body"]
+        else "posted"
+    )
+    save()
+    return receipt
+
+
 def build_report(ctx: ReviewCtx, base_ref: Ref, base: Sha, lanes: list[str]) -> str:
     """Assemble the per-lane sections into one readable Markdown review."""
     head = [f"# Multi-model review — {ctx.slug} PR #{ctx.pr}"]
@@ -1595,6 +1748,11 @@ def main() -> None:
         "re-running no lane. Implies posting. Refuses if the PR head has moved "
         "since that review.",
     )
+    ap.add_argument(
+        "--post-findings",
+        metavar="FILE",
+        help="post prepared repo/pr/commit_id/body/comments JSON without running review lanes",
+    )
     ap.add_argument("--keep-worktree", action="store_true")
     ap.add_argument(
         "--review-kind",
@@ -1640,6 +1798,14 @@ def main() -> None:
         die("--post and --report are mutually exclusive")
     if args.post_saved and args.report is not None:
         die("--post-saved and --report are mutually exclusive")
+    if args.post_findings and (args.post_saved or args.report is not None):
+        die("--post-findings cannot be combined with --post-saved or --report")
+    if args.post_findings:
+        receipt = post_prepared_review(Path(args.post_findings).expanduser(), args.pr)
+        print(json.dumps(receipt))
+        if receipt["status"] != "posted":
+            raise SystemExit(1)
+        return
     for tool in ("gh", "git"):
         if not shutil.which(tool):
             die(f"{tool} not found")
