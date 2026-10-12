@@ -476,6 +476,70 @@ class LaneConfigurationTest(unittest.TestCase):
             self.assertTrue((worktree / "antigravity.attempt1.stream.jsonl").exists())
             self.assertEqual(len(run.call_args_list), 3)
 
+    def test_antigravity_print_timeout_resumes_the_same_conversation_for_its_result(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            worktree = Path(td)
+            expected_head = "a" * 40
+            provenance_cmd = f"git -C {worktree} rev-parse HEAD"
+            inspected = json.dumps(
+                {
+                    "event": "step_update",
+                    "step_update": {
+                        "conversation_id": "conv-1",
+                        "state": "DONE",
+                        "tool_info": {
+                            "name": "run_command",
+                            "parameters": {"CommandLine": provenance_cmd},
+                            "output": expected_head,
+                        },
+                    },
+                }
+            )
+            cut_off = json.dumps(
+                {"event": "result", "result": {"conversation_id": "conv-1", "status": "SUCCESS", "response": ""}}
+            )
+            timed_out = CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=f"{inspected}\n{cut_off}",
+                stderr="[agy] print timeout after 30m0s with turn in progress; returning partial output",
+            )
+            review = {
+                "eligible": True,
+                "behavioral_delta": "Changes behavior.",
+                "inspected": [],
+                "coverage_gaps": [],
+                "change_map": {"components": [], "mermaid": ""},
+                "method": "Inspected the diff.",
+                "assessment": "ready",
+                "strengths": [],
+                "description_notes": [],
+                "findings": [],
+            }
+            finished = CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "event": "result",
+                        "result": {"conversation_id": "conv-1", "status": "SUCCESS", "response": json.dumps(review)},
+                    }
+                ),
+                stderr="",
+            )
+            head = CompletedProcess(args=[], returncode=0, stdout=f"{expected_head}\n", stderr="")
+            with (
+                patch.object(multi_model_review, "run", side_effect=[head, timed_out, finished]) as run,
+                patch.dict(multi_model_review.LANE_MODELS, {"antigravity": ""}),
+            ):
+                result = multi_model_review.lane_antigravity("prompt", td, worktree)
+
+            self.assertEqual(result.code, 0, result.err)
+            resume_cmd = run.call_args_list[2].args[0]
+            self.assertIn("--conversation", resume_cmd)
+            self.assertEqual(resume_cmd[resume_cmd.index("--conversation") + 1], "conv-1")
+            self.assertTrue((worktree / "antigravity.timeout.stream.jsonl").exists())
+
     def test_antigravity_surfaces_stream_error_after_retry(self) -> None:
         timed_out = CompletedProcess(
             args=[],

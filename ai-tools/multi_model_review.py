@@ -249,6 +249,19 @@ ANTIGRAVITY_REVIEW_SCHEMA = {
     },
 }
 _ANTIGRAVITY_RETRYABLE_ERRORS = ("timeout waiting for response",)
+# Antigravity makes one tool call per model turn, at about 11s a turn. A three-file
+# PR review took 45 turns (515s of model time) before it began its answer, so the
+# old 10m limit cut it off while it wrote the result (PR 2571, 2026-10-12). 30m
+# matches the multi-review skill's first progress checkpoint.
+ANTIGRAVITY_PRINT_TIMEOUT = "30m"
+# A resumed turn only writes the result of the inspection it already did.
+ANTIGRAVITY_FINISH_TIMEOUT = "10m"
+_ANTIGRAVITY_PRINT_TIMEOUT_MARKER = "print timeout"
+_ANTIGRAVITY_FINISH_PROMPT = """\
+Your previous turn reached the time limit before it returned the review result.
+Do not inspect the repository again. Using the inspection you already did, emit the
+schema-constrained result now.
+"""
 
 
 def die(msg: str) -> NoReturn:
@@ -707,23 +720,26 @@ Its output must be exactly `{expected_head}`. If it differs, stop and report fai
                 "Inspect concisely, then emit the schema-constrained result once. "
                 "Do not repeat filler or status words.\n"
             )
-        cmd = [
-            "agy",
-            "-p",
-            attempt_prompt,
-            "--dangerously-skip-permissions",
-            "--output-format",
-            "stream-json",
-            "--json-schema",
-            str(schema_path),
-            "--print-timeout",
-            "10m",
-        ]
-        if session_id:
-            cmd += ["--conversation", session_id]
-        if LANE_MODELS["antigravity"]:
-            cmd += ["--model", LANE_MODELS["antigravity"]]
-        p = run(cmd, cwd=wt, output_files=(out / "antigravity.stream.jsonl", out / "antigravity.err"))
+        output_files = (out / "antigravity.stream.jsonl", out / "antigravity.err")
+        p = run(
+            _agy_command(attempt_prompt, schema_path, ANTIGRAVITY_PRINT_TIMEOUT, session_id),
+            cwd=wt,
+            output_files=output_files,
+        )
+        conversation = session_id or _antigravity_conversation_id(p.stdout)
+        if _ANTIGRAVITY_PRINT_TIMEOUT_MARKER in p.stderr and conversation is not None:
+            # The turn was cut off, not stuck: resume it for the result instead of
+            # repeating the whole inspection in a fresh conversation.
+            (out / "antigravity.timeout.stream.jsonl").write_text(p.stdout)
+            (out / "antigravity.timeout.err").write_text(p.stderr)
+            print("[antigravity] print timeout mid-turn; asking the same conversation for its result")
+            finished = run(
+                _agy_command(_ANTIGRAVITY_FINISH_PROMPT, schema_path, ANTIGRAVITY_FINISH_TIMEOUT, conversation),
+                cwd=wt,
+                output_files=output_files,
+            )
+            # The checkout proof is in the first turn's stream; the result is in the second.
+            p = CompletedProcess(finished.args, finished.returncode, f"{p.stdout}\n{finished.stdout}", finished.stderr)
         if not session_id and attempt == 1 and _antigravity_retryable_error(p.stdout) is not None:
             (out / "antigravity.attempt1.stream.jsonl").write_text(p.stdout)
             (out / "antigravity.attempt1.err").write_text(p.stderr)
@@ -760,6 +776,37 @@ Its output must be exactly `{expected_head}`. If it differs, stop and report fai
     err = "Antigravity lane exhausted its generation retry without a result."
     (out / "antigravity.err").write_text(err)
     return LaneResult("", 1, err)
+
+
+def _agy_command(prompt: str, schema_path: Path, print_timeout: str, conversation: str | None) -> list[str]:
+    cmd = [
+        "agy",
+        "-p",
+        prompt,
+        "--dangerously-skip-permissions",
+        "--output-format",
+        "stream-json",
+        "--json-schema",
+        str(schema_path),
+        "--print-timeout",
+        print_timeout,
+    ]
+    if conversation is not None:
+        cmd += ["--conversation", conversation]
+    if LANE_MODELS["antigravity"]:
+        cmd += ["--model", LANE_MODELS["antigravity"]]
+    return cmd
+
+
+def _antigravity_conversation_id(raw: str) -> str | None:
+    for line in raw.splitlines():
+        with contextlib.suppress(json.JSONDecodeError):
+            event = json.loads(line)
+            for payload in (event.get("result"), event.get("step_update")):
+                conversation_id = payload.get("conversation_id") if isinstance(payload, dict) else None
+                if isinstance(conversation_id, str):
+                    return conversation_id
+    return None
 
 
 def _antigravity_retryable_error(raw: str) -> str | None:
