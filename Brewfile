@@ -104,6 +104,7 @@ cask "quicklook-video"          # Video thumbnails/metadata
 cask "raycast"
 cask "scroll-reverser"          # Better experience with trackpad+mouse
 cask "sleep-aid"                # Mac sleep monitor
+cask "spokenly"                 # Dictation and transcription app
 cask "spotify"
 cask "steam"
 cask "syncthing-app"
