@@ -587,6 +587,44 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(response, "")
         self.assertIn("did not prove the review checkout", error or "")
 
+    def test_antigravity_checks_head_inside_successful_command_output(self) -> None:
+        expected_head = "a" * 40
+        provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"
+        cases = (
+            (expected_head, True),
+            (f"Command exited with code 0.\n\nCommand output:\n{expected_head}\n", True),
+            (f"Command exited with code 0.\r\n\r\nCommand output:\r\n{expected_head}\r\n", True),
+            (f"Command exited with code 1.\n\nCommand output:\n{expected_head}\n", False),
+            (f"Command exited with code 0.\n\nCommand output:\n{'b' * 40}\n", False),
+            (f"Command exited with code 0.\n\nCommand output:\n{expected_head}\nextra output", False),
+        )
+        for output, valid in cases:
+            with self.subTest(output=output):
+                stream = "\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {
+                            "event": "step_update",
+                            "step_update": {
+                                "state": "DONE",
+                                "tool_info": {
+                                    "parameters": {"CommandLine": provenance_cmd},
+                                    "output": output,
+                                },
+                            },
+                        },
+                        {"event": "result", "result": {"status": "SUCCESS", "response": "review"}},
+                    )
+                )
+                response, error = multi_model_review._parse_antigravity_stream(
+                    stream,
+                    worktree=Path("/tmp/review-worktree"),
+                    provenance_cmd=provenance_cmd,
+                    expected_head=expected_head,
+                )
+                self.assertEqual(response, "review" if valid else "")
+                self.assertEqual(error is None, valid)
+
     def test_antigravity_rejects_repository_tool_cwd_outside_worktree(self) -> None:
         expected_head = "a" * 40
         provenance_cmd = "git -C /tmp/review-worktree rev-parse HEAD"

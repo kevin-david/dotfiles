@@ -871,7 +871,11 @@ def _parse_antigravity_stream(
                     command = params.get("CommandLine")
                     output = tool.get("output")
                     if command == provenance_cmd and isinstance(output, str):
-                        provenance_ok = output.strip() == expected_head
+                        command_output = output.replace("\r\n", "\n").strip()
+                        command_output = command_output.removeprefix(
+                            "Command exited with code 0.\n\nCommand output:\n"
+                        ).strip()
+                        provenance_ok = command_output == expected_head
                     for key, value in params.items():
                         if not isinstance(value, str) or not Path(value).is_absolute():
                             continue
