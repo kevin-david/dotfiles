@@ -34,15 +34,18 @@ set -euo pipefail
 # exit 127, before `codex login` ever ran.
 #
 # So the install root is fixed and only the state root follows CODEX_HOME.
-# Machines running T3 keep their install in T3's machine-local home, because
-# T3 updates Codex with CODEX_HOME set there (brain: tools/t3-service-env);
-# others keep it in ~/.codex. Both paths are relative to whichever machine is
-# asking, so they resolve even where ~/.local or ~/.codex is shared.
+# Machines running T3 have one Codex home, T3's machine-local one, which also
+# holds the install because T3 updates Codex with CODEX_HOME set there (brain:
+# tools/t3-service-env). Others use ~/.codex. Both paths are relative to
+# whichever machine is asking, so they resolve even where ~/.local or ~/.codex
+# is shared. State defaults to the same home, so a shell without CODEX_HOME
+# does not recreate a second one.
 INSTALL_HOME="$HOME/.codex-t3/shared"
 [ -x "$INSTALL_HOME/packages/standalone/current/bin/codex" ] || INSTALL_HOME="$HOME/.codex"
 CODEX_BIN="$INSTALL_HOME/packages/standalone/current/bin/codex"
+export CODEX_HOME="${CODEX_HOME:-$INSTALL_HOME}"
 
-CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
+CODEX_ROOT="$CODEX_HOME"
 STAMP="$CODEX_ROOT/.active-account-stamp"
 
 if [ ! -x "$CODEX_BIN" ]; then
