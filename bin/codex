@@ -34,11 +34,13 @@ set -euo pipefail
 # exit 127, before `codex login` ever ran.
 #
 # So the install root is fixed and only the state root follows CODEX_HOME.
-# ~/.local/bin/codex still stays out of it: Codex rewrites that alias on every
-# install or update as a path absolute under the CODEX_HOME that wrote it, so it
-# dangles anywhere ~/.local is shared between machines. $HOME/.codex is relative
-# to whichever machine is asking, so it resolves on all of them.
-CODEX_BIN="$HOME/.codex/packages/standalone/current/bin/codex"
+# Machines running T3 keep their install in T3's machine-local home, because
+# T3 updates Codex with CODEX_HOME set there (brain: tools/t3-service-env);
+# others keep it in ~/.codex. Both paths are relative to whichever machine is
+# asking, so they resolve even where ~/.local or ~/.codex is shared.
+INSTALL_HOME="$HOME/.codex-t3/shared"
+[ -x "$INSTALL_HOME/packages/standalone/current/bin/codex" ] || INSTALL_HOME="$HOME/.codex"
+CODEX_BIN="$INSTALL_HOME/packages/standalone/current/bin/codex"
 
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
 STAMP="$CODEX_ROOT/.active-account-stamp"
@@ -47,6 +49,11 @@ if [ ! -x "$CODEX_BIN" ]; then
   echo "codex: no managed install at $CODEX_BIN" >&2
   echo "codex: install it with: curl -fsSL https://chatgpt.com/codex/install.sh | sh" >&2
   exit 127
+fi
+
+# Codex recognizes a standalone install only under $CODEX_HOME/packages/standalone.
+if [ "${1:-}" = update ]; then
+  CODEX_HOME="$INSTALL_HOME" exec "$CODEX_BIN" "$@"
 fi
 
 # Read the selected account without needing a JSON parser on PATH.
