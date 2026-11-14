@@ -598,6 +598,8 @@ class LaneConfigurationTest(unittest.TestCase):
             (f"Command exited with code 0.\n\nCommand output:\n{'b' * 40}\n", False),
             (f"Command exited with code 0.\n\nCommand output:\n{expected_head}\nextra output", False),
         )
+        timestamps = "Created At: 2026-11-13T12:00:00Z\nCompleted At: 2026-11-13T12:00:01Z\n"
+        cases += tuple((timestamps + output, valid) for output, valid in cases[1:])
         for output, valid in cases:
             with self.subTest(output=output):
                 stream = "\n".join(

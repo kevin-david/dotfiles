@@ -872,6 +872,7 @@ def _parse_antigravity_stream(
                     output = tool.get("output")
                     if command == provenance_cmd and isinstance(output, str):
                         command_output = output.replace("\r\n", "\n").strip()
+                        command_output = re.sub(r"\ACreated At: [^\n]+\nCompleted At: [^\n]+\n", "", command_output)
                         command_output = command_output.removeprefix(
                             "Command exited with code 0.\n\nCommand output:\n"
                         ).strip()
