@@ -598,6 +598,10 @@ class LaneConfigurationTest(unittest.TestCase):
             (f"Command exited with code 1.\n\nCommand output:\n{expected_head}\n", False),
             (f"Command exited with code 0.\n\nCommand output:\n{'b' * 40}\n", False),
             (f"Command exited with code 0.\n\nCommand output:\n{expected_head}\nextra output", False),
+            (
+                f"Working Directory: /tmp/elsewhere\nCommand exited with code 0.\n\nCommand output:\n{expected_head}\n",
+                False,
+            ),
         )
         timestamps = "Created At: 2026-11-13T12:00:00Z\nCompleted At: 2026-11-13T12:00:01Z\n"
         cases += tuple((timestamps + output, valid) for output, valid in cases[1:])
