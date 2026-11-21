@@ -22,6 +22,7 @@ class LaneConfigurationTest(unittest.TestCase):
         self.assertEqual(multi_model_review.LANE_EFFORTS["claude"], "high")
         self.assertEqual(multi_model_review.LANE_MODELS["codex"], "gpt-6.2-astra")
         self.assertEqual(multi_model_review.LANE_EFFORTS["codex"], "medium")
+        self.assertEqual(multi_model_review.LANE_MODELS["antigravity"], "gemini-4-hydrogen-high")
 
     def test_claude_and_codex_commands_use_their_default_presets(self) -> None:
         with tempfile.TemporaryDirectory() as td:
